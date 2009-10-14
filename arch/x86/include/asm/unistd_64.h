@@ -669,6 +669,12 @@ __SYSCALL(__NR_fanotify_init, sys_fanotify_init)
 __SYSCALL(__NR_fanotify_mark, sys_fanotify_mark)
 #define __NR_prlimit64				302
 __SYSCALL(__NR_prlimit64, sys_prlimit64)
+#define __NR_sched_setscheduler_ex		303
+__SYSCALL(__NR_sched_setscheduler_ex, sys_sched_setscheduler_ex)
+#define __NR_sched_setparam_ex			304
+__SYSCALL(__NR_sched_setparam_ex, sys_sched_setparam_ex)
+#define __NR_sched_getparam_ex			305
+__SYSCALL(__NR_sched_getparam_ex, sys_sched_getparam_ex)
 
 #ifndef __NO_STUBS
 #define __ARCH_WANT_OLD_READDIR

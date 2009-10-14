@@ -346,10 +346,13 @@
 #define __NR_fanotify_init	338
 #define __NR_fanotify_mark	339
 #define __NR_prlimit64		340
+#define __NR_sched_setscheduler_ex	341
+#define __NR_sched_setparam_ex		342
+#define __NR_sched_getparam_ex		343
 
 #ifdef __KERNEL__
 
-#define NR_syscalls 341
+#define NR_syscalls 344
 
 #define __ARCH_WANT_IPC_PARSE_VERSION
 #define __ARCH_WANT_OLD_READDIR

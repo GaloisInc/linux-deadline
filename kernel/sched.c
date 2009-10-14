@@ -4704,7 +4704,9 @@ static bool check_same_owner(struct task_struct *p)
 }
 
 static int __sched_setscheduler(struct task_struct *p, int policy,
-				const struct sched_param *param, bool user)
+				const struct sched_param *param,
+				const struct sched_param_ex *param_ex,
+				bool user)
 {
 	int retval, oldprio, oldpolicy = -1, on_rq, running;
 	unsigned long flags;
@@ -4861,9 +4863,17 @@ recheck:
 int sched_setscheduler(struct task_struct *p, int policy,
 		       const struct sched_param *param)
 {
-	return __sched_setscheduler(p, policy, param, true);
+	return __sched_setscheduler(p, policy, param, NULL, true);
 }
 EXPORT_SYMBOL_GPL(sched_setscheduler);
+
+int sched_setscheduler_ex(struct task_struct *p, int policy,
+			  const struct sched_param *param,
+			  const struct sched_param_ex *param_ex)
+{
+	return __sched_setscheduler(p, policy, param, param_ex, true);
+}
+EXPORT_SYMBOL_GPL(sched_setscheduler_ex);
 
 /**
  * sched_setscheduler_nocheck - change the scheduling policy and/or RT priority of a thread from kernelspace.
@@ -4879,7 +4889,7 @@ EXPORT_SYMBOL_GPL(sched_setscheduler);
 int sched_setscheduler_nocheck(struct task_struct *p, int policy,
 			       const struct sched_param *param)
 {
-	return __sched_setscheduler(p, policy, param, false);
+	return __sched_setscheduler(p, policy, param, NULL, false);
 }
 
 static int
@@ -4904,6 +4914,56 @@ do_sched_setscheduler(pid_t pid, int policy, struct sched_param __user *param)
 	return retval;
 }
 
+/*
+ * Notice that, to extend sched_param_ex in the future without causing ABI
+ * issues, the user-space is asked to pass to this (and the other *_ex())
+ * function(s) the actual size of the data structure it has been compiled
+ * against.
+ *
+ * What we do is the following:
+ *  - if the user data structure is bigger than our one we fail, since this
+ *    means we wouldn't be able of providing some of the features that
+ *    are expected;
+ *  - if the user data structure is smaller than our one we can continue,
+ *    we just initialize to default all the fielld of the kernel-side
+ *    sched_param_ex and copy from the user the available values. This
+ *    obviously assume that such data structure can only grow and that
+ *    positions and meaning of the existing fields will not be altered.
+ *
+ * The issue can be addressed also adding a "version" field to the data
+ * structure itself (which would also remove the fixed position & meaning
+ * requirement)... Comments about the best way to go are welcome!
+ */
+static int
+do_sched_setscheduler_ex(pid_t pid, int policy, unsigned len,
+			 struct sched_param_ex __user *param_ex)
+{
+	struct sched_param lparam;
+	struct sched_param_ex lparam_ex;
+	struct task_struct *p;
+	int retval;
+
+	if (!param_ex || pid < 0)
+		return -EINVAL;
+	if (len > sizeof(lparam_ex))
+		return -EINVAL;
+
+	memset(&lparam_ex, 0, sizeof(lparam_ex));
+	if (copy_from_user(&lparam_ex, param_ex, len))
+		return -EFAULT;
+
+	rcu_read_lock();
+	retval = -ESRCH;
+	p = find_process_by_pid(pid);
+	if (p != NULL) {
+		lparam.sched_priority = lparam_ex.sched_priority;
+		retval = sched_setscheduler_ex(p, policy, &lparam, &lparam_ex);
+	}
+	rcu_read_unlock();
+
+	return retval;
+}
+
 /**
  * sys_sched_setscheduler - set/change the scheduler policy and RT priority
  * @pid: the pid in question.
@@ -4921,6 +4981,22 @@ SYSCALL_DEFINE3(sched_setscheduler, pid_t, pid, int, policy,
 }
 
 /**
+ * sys_sched_setscheduler_ex - same as above, but with extended sched_param
+ * @pid: the pid in question.
+ * @policy: new policy (could use extended sched_param).
+ * @len: size of data pointed by param_ex.
+ * @param: structure containg the extended parameters.
+ */
+SYSCALL_DEFINE4(sched_setscheduler_ex, pid_t, pid, int, policy,
+		unsigned, len, struct sched_param_ex __user *, param_ex)
+{
+	if (policy < 0)
+		return -EINVAL;
+
+	return do_sched_setscheduler_ex(pid, policy, len, param_ex);
+}
+
+/**
  * sys_sched_setparam - set/change the RT priority of a thread
  * @pid: the pid in question.
  * @param: structure containing the new RT priority.
@@ -4928,6 +5004,18 @@ SYSCALL_DEFINE3(sched_setscheduler, pid_t, pid, int, policy,
 SYSCALL_DEFINE2(sched_setparam, pid_t, pid, struct sched_param __user *, param)
 {
 	return do_sched_setscheduler(pid, -1, param);
+}
+
+/**
+ * sys_sched_setparam_ex - same as above, but with extended sched_param
+ * @pid: the pid in question.
+ * @len: size of data pointed by param_ex.
+ * @param_ex: structure containing the extended parameters.
+ */
+SYSCALL_DEFINE3(sched_setparam_ex, pid_t, pid, unsigned, len,
+		struct sched_param_ex __user *, param_ex)
+{
+	return do_sched_setscheduler_ex(pid, -1, len, param_ex);
 }
 
 /**
@@ -4992,6 +5080,47 @@ SYSCALL_DEFINE2(sched_getparam, pid_t, pid, struct sched_param __user *, param)
 out_unlock:
 	rcu_read_unlock();
 	return retval;
+}
+
+/**
+ * sys_sched_getparam_ex - same as above, but with extended sched_param
+ * @pid: the pid in question.
+ * @len: size of data pointed by param_ex.
+ * @param_ex: structure containing the extended parameters.
+ */
+SYSCALL_DEFINE3(sched_getparam_ex, pid_t, pid, unsigned, len,
+		struct sched_param_ex __user *, param_ex)
+{
+	struct sched_param_ex lp;
+	struct task_struct *p;
+	int retval;
+
+	if (!param_ex || pid < 0)
+		return -EINVAL;
+	if (len > sizeof(lp))
+		return -EINVAL;
+
+	rcu_read_lock();
+	p = find_process_by_pid(pid);
+	retval = -ESRCH;
+	if (!p)
+		goto out_unlock;
+
+	retval = security_task_getscheduler(p);
+	if (retval)
+		goto out_unlock;
+
+	lp.sched_priority = p->rt_priority;
+	rcu_read_unlock();
+
+	retval = copy_to_user(param_ex, &lp, len) ? -EFAULT : 0;
+
+	return retval;
+
+out_unlock:
+	rcu_read_unlock();
+	return retval;
+
 }
 
 long sched_setaffinity(pid_t pid, const struct cpumask *in_mask)

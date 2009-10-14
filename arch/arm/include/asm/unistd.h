@@ -396,6 +396,9 @@
 #define __NR_fanotify_init		(__NR_SYSCALL_BASE+367)
 #define __NR_fanotify_mark		(__NR_SYSCALL_BASE+368)
 #define __NR_prlimit64			(__NR_SYSCALL_BASE+369)
+#define __NR_sched_setscheduler_ex	(__NR_SYSCALL_BASE+370)
+#define __NR_sched_setparam_ex		(__NR_SYSCALL_BASE+371)
+#define __NR_sched_getparam_ex		(__NR_SYSCALL_BASE+372)
 
 /*
  * The following SWIs are ARM private.
