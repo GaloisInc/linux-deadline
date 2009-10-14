@@ -557,11 +557,18 @@ trace_selftest_startup_nop(struct tracer *trace, struct trace_array *tr)
 #ifdef CONFIG_SCHED_TRACER
 static int trace_wakeup_test_thread(void *data)
 {
-	/* Make this a RT thread, doesn't need to be too high */
-	static struct sched_param param = { .sched_priority = 5 };
+	/* Make this a -deadline thread */
+	struct sched_param param = { .sched_priority = 0 };
+	struct sched_param_ex paramx = {
+		.sched_priority = 0,
+		.sched_runtime = { .tv_sec = 0, .tv_nsec = 100000 },
+		.sched_deadline = { .tv_sec = 0, .tv_nsec = 10000000 },
+		.sched_period = { .tv_sec = 0, tv_nsec = 10000000 }
+		.sched_flags = 0
+	};
 	struct completion *x = data;
 
-	sched_setscheduler(current, SCHED_FIFO, &param);
+	sched_setscheduler_ex(current, SCHED_DEADLINE, &param, &paramx);
 
 	/* Make it know we have a new prio */
 	complete(x);
@@ -573,8 +580,8 @@ static int trace_wakeup_test_thread(void *data)
 	/* we are awake, now wait to disappear */
 	while (!kthread_should_stop()) {
 		/*
-		 * This is an RT task, do short sleeps to let
-		 * others run.
+		 * This will likely be the system top priority
+		 * task, do short sleeps to let others run.
 		 */
 		msleep(100);
 	}
@@ -587,21 +594,21 @@ trace_selftest_startup_wakeup(struct tracer *trace, struct trace_array *tr)
 {
 	unsigned long save_max = tracing_max_latency;
 	struct task_struct *p;
-	struct completion isrt;
+	struct completion is_ready;
 	unsigned long count;
 	int ret;
 
-	init_completion(&isrt);
+	init_completion(&is_ready);
 
-	/* create a high prio thread */
-	p = kthread_run(trace_wakeup_test_thread, &isrt, "ftrace-test");
+	/* create a -deadline thread */
+	p = kthread_run(trace_wakeup_test_thread, &is_ready, "ftrace-test");
 	if (IS_ERR(p)) {
 		printk(KERN_CONT "Failed to create ftrace wakeup test thread ");
 		return -1;
 	}
 
-	/* make sure the thread is running at an RT prio */
-	wait_for_completion(&isrt);
+	/* make sure the thread is running at -deadline policy */
+	wait_for_completion(&is_ready);
 
 	/* start the tracing */
 	ret = tracer_init(trace, tr);
@@ -613,7 +620,7 @@ trace_selftest_startup_wakeup(struct tracer *trace, struct trace_array *tr)
 	/* reset the max latency */
 	tracing_max_latency = 0;
 
-	/* sleep to let the RT thread sleep too */
+	/* sleep to let the thread sleep too */
 	msleep(100);
 
 	/*
