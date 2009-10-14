@@ -1928,6 +1928,12 @@ static void dec_nr_running(struct rq *rq)
 
 static void set_load_weight(struct task_struct *p)
 {
+	if (task_has_dl_policy(p) || task_has_rt_policy(p)) {
+		p->se.load.weight = 0;
+		p->se.load.inv_weight = WMULT_CONST;
+		return;
+	}
+
 	/*
 	 * SCHED_IDLE tasks get minimal weight:
 	 */
@@ -2072,6 +2078,7 @@ static void sched_irq_time_avg_update(struct rq *rq, u64 curr_irq_time) { }
 #include "sched_idletask.c"
 #include "sched_fair.c"
 #include "sched_rt.c"
+#include "sched_dl.c"
 #include "sched_stoptask.c"
 #ifdef CONFIG_SCHED_DEBUG
 # include "sched_debug.c"
@@ -2750,7 +2757,11 @@ void sched_fork(struct task_struct *p, int clone_flags)
 	 */
 	p->prio = current->normal_prio;
 
-	if (!rt_prio(p->prio))
+	if (dl_prio(p->prio))
+		p->sched_class = &dl_sched_class;
+	else if (rt_prio(p->prio))
+		p->sched_class = &rt_sched_class;
+	else
 		p->sched_class = &fair_sched_class;
 
 	if (p->sched_class->task_fork)
@@ -4530,8 +4541,6 @@ long __sched sleep_on_timeout(wait_queue_head_t *q, long timeout)
 }
 EXPORT_SYMBOL(sleep_on_timeout);
 
-static const struct sched_class dl_sched_class;
-
 #ifdef CONFIG_RT_MUTEXES
 
 /*
@@ -4760,6 +4769,40 @@ __setscheduler(struct rq *rq, struct task_struct *p, int policy, int prio)
 }
 
 /*
+ * This function initializes the sched_dl_entity of a newly becoming
+ * SCHED_DEADLINE task.
+ *
+ * Only the static values are considered here, the actual runtime and the
+ * absolute deadline will be properly calculated when the task is enqueued
+ * for the first time with its new policy.
+ */
+static void
+__setparam_dl(struct task_struct *p, const struct sched_param_ex *param_ex)
+{
+	struct sched_dl_entity *dl_se = &p->dl;
+
+	init_dl_task_timer(dl_se);
+	dl_se->dl_runtime = timespec_to_ns(&param_ex->sched_runtime);
+	dl_se->dl_deadline = timespec_to_ns(&param_ex->sched_deadline);
+	dl_se->flags = param_ex->sched_flags;
+	dl_se->dl_throttled = 0;
+	dl_se->dl_new = 1;
+}
+
+static void
+__getparam_dl(struct task_struct *p, struct sched_param_ex *param_ex)
+{
+	struct sched_dl_entity *dl_se = &p->dl;
+
+	param_ex->sched_priority = p->rt_priority;
+	param_ex->sched_runtime = ns_to_timespec(dl_se->dl_runtime);
+	param_ex->sched_deadline = ns_to_timespec(dl_se->dl_deadline);
+	param_ex->sched_flags = dl_se->flags;
+	param_ex->curr_runtime = ns_to_timespec(dl_se->runtime);
+	param_ex->curr_deadline = ns_to_timespec(dl_se->deadline);
+}
+
+/*
  * This function validates the new parameters of a -deadline task.
  * We ask for the deadline not being zero, and greater or equal
  * than the runtime.
@@ -4922,7 +4965,11 @@ recheck:
 
 	oldprio = p->prio;
 	prev_class = p->sched_class;
-	__setscheduler(rq, p, policy, param->sched_priority);
+	if (dl_policy(policy)) {
+		__setparam_dl(p, param_ex);
+		__setscheduler(rq, p, policy, param_ex->sched_priority);
+	} else
+		__setscheduler(rq, p, policy, param->sched_priority);
 
 	if (running)
 		p->sched_class->set_curr_task(rq);
@@ -5043,7 +5090,10 @@ do_sched_setscheduler_ex(pid_t pid, int policy, unsigned len,
 	retval = -ESRCH;
 	p = find_process_by_pid(pid);
 	if (p != NULL) {
-		lparam.sched_priority = lparam_ex.sched_priority;
+		if (dl_policy(policy))
+			lparam.sched_priority = 0;
+		else
+			lparam.sched_priority = lparam_ex.sched_priority;
 		retval = sched_setscheduler_ex(p, policy, &lparam, &lparam_ex);
 	}
 	rcu_read_unlock();
@@ -5197,7 +5247,10 @@ SYSCALL_DEFINE3(sched_getparam_ex, pid_t, pid, unsigned, len,
 	if (retval)
 		goto out_unlock;
 
-	lp.sched_priority = p->rt_priority;
+	if (task_has_dl_policy(p))
+		__getparam_dl(p, &lp);
+	else
+		lp.sched_priority = p->rt_priority;
 	rcu_read_unlock();
 
 	retval = copy_to_user(param_ex, &lp, len) ? -EFAULT : 0;
@@ -5523,6 +5576,7 @@ SYSCALL_DEFINE1(sched_get_priority_max, int, policy)
 	case SCHED_RR:
 		ret = MAX_USER_RT_PRIO-1;
 		break;
+	case SCHED_DEADLINE:
 	case SCHED_NORMAL:
 	case SCHED_BATCH:
 	case SCHED_IDLE:
@@ -5548,6 +5602,7 @@ SYSCALL_DEFINE1(sched_get_priority_min, int, policy)
 	case SCHED_RR:
 		ret = 1;
 		break;
+	case SCHED_DEADLINE:
 	case SCHED_NORMAL:
 	case SCHED_BATCH:
 	case SCHED_IDLE:

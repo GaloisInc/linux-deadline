@@ -1014,6 +1014,11 @@ static void check_preempt_equal_prio(struct rq *rq, struct task_struct *p)
  */
 static void check_preempt_curr_rt(struct rq *rq, struct task_struct *p, int flags)
 {
+	/*
+	 * Since MAX_DL_PRIO is less than any possible RT
+	 * prio, this also guarantees that all -deadline tasks
+	 * preempt -rt ones.
+	 */
 	if (p->prio < rq->curr->prio) {
 		resched_task(rq->curr);
 		return;
