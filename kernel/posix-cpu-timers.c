@@ -901,6 +901,37 @@ void posix_cpu_timer_get(struct k_itimer *timer, struct itimerspec *itp)
 }
 
 /*
+ * Inform a -deadline task that it is overrunning its runtime or
+ * (much worse) missing a deadline. This is done by sending the task
+ * SIGXCPU, with some additional information to let it discover
+ * what actually happened.
+ *
+ * The nature of the violation is coded in si_errno, while an attempt
+ * to let the task know *how big* the violation is is done through
+ * si_value. Unfortunately, only an int field is available there,
+ * thus what reported might be inaccurate.
+ */
+static inline void __dl_signal(struct task_struct *tsk, int which)
+{
+	struct siginfo info;
+	long long amount = which == SF_SIG_DMISS ? tsk->dl.stats.last_dmiss :
+			   tsk->dl.stats.last_rorun;
+
+	info.si_signo = SIGXCPU;
+	info.si_errno = which;
+	info.si_code = SI_KERNEL;
+	info.si_pid = 0;
+	info.si_uid = 0;
+	info.si_value.sival_int = (int)amount;
+
+	/* Correctly take the locks on task's sighand */
+	__group_send_sig_info(SIGXCPU, &info, tsk);
+	/* Log what happened to dmesg */
+	printk(KERN_INFO "SCHED_DEADLINE: 0x%4x by %Ld [ns] in %d (%s)\n",
+	       which, amount, task_pid_nr(tsk), tsk->comm);
+}
+
+/*
  * Check for any per-thread CPU timers that have fired and move them off
  * the tsk->cpu_timers[N] list onto the firing list.  Here we update the
  * tsk->it_*_expires values to reflect the remaining thread CPU timers.
@@ -955,6 +986,25 @@ static void check_thread_timers(struct task_struct *tsk,
 		}
 		t->firing = 1;
 		list_move_tail(&t->entry, firing);
+	}
+
+	/*
+	 * if the userspace asked for that, we notify about (scheduling)
+	 * deadline misses and runtime overruns via sending SIGXCPU to
+	 * "faulting" task.
+	 *
+	 * Note that (hopefully small) runtime overruns are very likely
+	 * to occur, mainly due to accounting resolution, while missing a
+	 * scheduling deadline should be very rare, and only happen on
+	 * an oversubscribed systems.
+	 *
+	 */
+	if (unlikely(dl_task(tsk))) {
+		if ((tsk->dl.flags & SF_SIG_DMISS) && tsk->dl.stats.dmiss)
+			__dl_signal(tsk, SF_SIG_DMISS);
+		if ((tsk->dl.flags & SF_SIG_RORUN) && tsk->dl.stats.rorun)
+			__dl_signal(tsk, SF_SIG_RORUN);
+		tsk->dl.stats.dmiss = tsk->dl.stats.rorun = 0;
 	}
 
 	/*
@@ -1271,6 +1321,11 @@ static inline int task_cputime_expired(const struct task_cputime *sample,
 static inline int fastpath_timer_check(struct task_struct *tsk)
 {
 	struct signal_struct *sig;
+
+	if (unlikely(dl_task(tsk) &&
+	    (((tsk->dl.flags & SF_SIG_DMISS) && tsk->dl.stats.dmiss) ||
+	     ((tsk->dl.flags & SF_SIG_RORUN) && tsk->dl.stats.rorun))))
+		return 1;
 
 	if (!task_cputime_zero(&tsk->cputime_expires)) {
 		struct task_cputime task_sample = {

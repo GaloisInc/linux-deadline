@@ -163,8 +163,19 @@ struct sched_param_ex {
  *              of the highest priority scheduling class. In case it
  *              it sched_deadline, the task also ignore runtime and
  *              bandwidth limitations.
+ *
+ * These flags here below are meant to be used by userspace tasks to affect
+ * the scheduler behaviour and/or specifying that they want to be informed
+ * of the occurrence of some events.
+ *
+ *  @SF_SIG_RORUN       tells us the task wants to be notified whenever
+ *                      a runtime overrun occurs;
+ *  @SF_SIG_DMISS       tells us the task wants to be notified whenever
+ *                      a scheduling deadline is missed.
  */
 #define SF_HEAD		1
+#define SF_SIG_RORUN	2
+#define SF_SIG_DMISS	4
 
 struct exec_domain;
 struct futex_pi_state;
@@ -1243,9 +1254,10 @@ struct sched_rt_entity {
 };
 
 struct sched_stats_dl {
-#ifdef CONFIG_SCHEDSTATS
+	int			dmiss, rorun;
 	u64			last_dmiss;
 	u64			last_rorun;
+#ifdef CONFIG_SCHEDSTATS
 	u64			dmiss_max;
 	u64			rorun_max;
 #endif

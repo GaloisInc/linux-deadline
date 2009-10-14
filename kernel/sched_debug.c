@@ -468,8 +468,10 @@ void proc_sched_show_task(struct task_struct *p, struct seq_file *m)
 	P(se.statistics.nr_wakeups_passive);
 	P(se.statistics.nr_wakeups_idle);
 	if (dl_task(p)) {
+		P(dl.stats.dmiss);
 		PN(dl.stats.last_dmiss);
 		PN(dl.stats.dmiss_max);
+		P(dl.stats.rorun);
 		PN(dl.stats.last_rorun);
 		PN(dl.stats.rorun_max);
 		PN(dl.stats.tot_rtime);

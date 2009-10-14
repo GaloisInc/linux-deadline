@@ -491,14 +491,18 @@ int dl_runtime_exceeded(struct rq *rq, struct sched_dl_entity *dl_se)
 	if (dmiss) {
 		u64 damount = rq->clock - dl_se->deadline;
 
-		schedstat_set(dl_se->stats.last_dmiss, damount);
+		dl_se->stats.dmiss = 1;
+		dl_se->stats.last_dmiss = damount;
+
 		schedstat_set(dl_se->stats.dmiss_max,
 			      max(dl_se->stats.dmiss_max, damount));
 	}
 	if (rorun) {
 		u64 ramount = -dl_se->runtime;
 
-		schedstat_set(dl_se->stats.last_rorun, ramount);
+		dl_se->stats.rorun = 1;
+		dl_se->stats.last_rorun = ramount;
+
 		schedstat_set(dl_se->stats.rorun_max,
 			      max(dl_se->stats.rorun_max, ramount));
 	}
