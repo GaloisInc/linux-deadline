@@ -156,14 +156,14 @@ static int process_read_event(event_t *event, struct perf_session *session __use
 	return 0;
 }
 
-static int sample_type_check(struct perf_session *session)
+static int perf_session__setup_sample_type(struct perf_session *self)
 {
-	if (!(session->sample_type & PERF_SAMPLE_CALLCHAIN)) {
+	if (!(self->sample_type & PERF_SAMPLE_CALLCHAIN)) {
 		if (sort__has_parent) {
 			fprintf(stderr, "selected --sort parent, but no"
 					" callchain data. Did you call"
 					" perf record without -g?\n");
-			return -1;
+			return -EINVAL;
 		}
 		if (symbol_conf.use_callchain) {
 			fprintf(stderr, "selected -g but no callchain data."
@@ -176,7 +176,7 @@ static int sample_type_check(struct perf_session *session)
 			if (register_callchain_param(&callchain_param) < 0) {
 				fprintf(stderr, "Can't register callchain"
 						" params\n");
-				return -1;
+				return -EINVAL;
 			}
 	}
 
@@ -184,20 +184,18 @@ static int sample_type_check(struct perf_session *session)
 }
 
 static struct perf_event_ops event_ops = {
-	.process_sample_event	= process_sample_event,
-	.process_mmap_event	= event__process_mmap,
-	.process_comm_event	= event__process_comm,
-	.process_exit_event	= event__process_task,
-	.process_fork_event	= event__process_task,
-	.process_lost_event	= event__process_lost,
-	.process_read_event	= process_read_event,
-	.sample_type_check	= sample_type_check,
+	.sample	= process_sample_event,
+	.mmap	= event__process_mmap,
+	.comm	= event__process_comm,
+	.exit	= event__process_task,
+	.fork	= event__process_task,
+	.lost	= event__process_lost,
+	.read	= process_read_event,
 };
-
 
 static int __cmd_report(void)
 {
-	int ret;
+	int ret = -EINVAL;
 	struct perf_session *session;
 
 	session = perf_session__new(input_name, O_RDONLY, force);
@@ -206,6 +204,10 @@ static int __cmd_report(void)
 
 	if (show_threads)
 		perf_read_values_init(&show_threads_values);
+
+	ret = perf_session__setup_sample_type(session);
+	if (ret)
+		goto out_delete;
 
 	ret = perf_session__process_events(session, &event_ops);
 	if (ret)
@@ -319,7 +321,7 @@ static const struct option options[] = {
 		   "pretty printing style key: normal raw"),
 	OPT_STRING('s', "sort", &sort_order, "key[,key2...]",
 		   "sort by key(s): pid, comm, dso, symbol, parent"),
-	OPT_BOOLEAN('P', "full-paths", &event_ops.full_paths,
+	OPT_BOOLEAN('P', "full-paths", &symbol_conf.full_paths,
 		    "Don't shorten the pathnames taking into account the cwd"),
 	OPT_STRING('p', "parent", &parent_pattern, "regex",
 		   "regex filter to identify parent, see: '--sort parent'"),

@@ -20,6 +20,7 @@ struct perf_session {
 	struct thread		*last_match;
 	struct events_stats	events_stats;
 	unsigned long		event_total[PERF_RECORD_MAX];
+	unsigned long		unknown_events;
 	struct rb_root		hists;
 	u64			sample_type;
 	int			fd;
@@ -31,18 +32,15 @@ struct perf_session {
 typedef int (*event_op)(event_t *self, struct perf_session *session);
 
 struct perf_event_ops {
-	event_op	process_sample_event;
-	event_op	process_mmap_event;
-	event_op	process_comm_event;
-	event_op	process_fork_event;
-	event_op	process_exit_event;
-	event_op	process_lost_event;
-	event_op	process_read_event;
-	event_op	process_throttle_event;
-	event_op	process_unthrottle_event;
-	int		(*sample_type_check)(struct perf_session *session);
-	unsigned long	total_unknown;
-	bool		full_paths;
+	event_op sample,
+		 mmap,
+		 comm,
+		 fork,
+		 exit,
+		 lost,
+		 read,
+		 throttle,
+		 unthrottle;
 };
 
 struct perf_session *perf_session__new(const char *filename, int mode, bool force);
@@ -55,6 +53,8 @@ struct symbol **perf_session__resolve_callchain(struct perf_session *self,
 						struct thread *thread,
 						struct ip_callchain *chain,
 						struct symbol **parent);
+
+bool perf_session__has_traces(struct perf_session *self, const char *msg);
 
 int perf_header__read_build_ids(int input, u64 offset, u64 file_size);
 

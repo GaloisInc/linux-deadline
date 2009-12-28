@@ -66,6 +66,7 @@ struct perf_session *perf_session__new(const char *filename, int mode, bool forc
 	self->mmap_window = 32;
 	self->cwd = NULL;
 	self->cwdlen = 0;
+	self->unknown_events = 0;
 	map_groups__init(&self->kmaps);
 
 	if (perf_session__create_kernel_maps(self) < 0)
@@ -73,6 +74,8 @@ struct perf_session *perf_session__new(const char *filename, int mode, bool forc
 
 	if (mode == O_RDONLY && perf_session__open(self, force) < 0)
 		goto out_delete;
+
+	self->sample_type = perf_header__sample_type(&self->header);
 out:
 	return self;
 out_free:
@@ -147,4 +150,254 @@ struct symbol **perf_session__resolve_callchain(struct perf_session *self,
 	}
 
 	return syms;
+}
+
+static int process_event_stub(event_t *event __used,
+			      struct perf_session *session __used)
+{
+	dump_printf(": unhandled!\n");
+	return 0;
+}
+
+static void perf_event_ops__fill_defaults(struct perf_event_ops *handler)
+{
+	if (handler->sample == NULL)
+		handler->sample = process_event_stub;
+	if (handler->mmap == NULL)
+		handler->mmap = process_event_stub;
+	if (handler->comm == NULL)
+		handler->comm = process_event_stub;
+	if (handler->fork == NULL)
+		handler->fork = process_event_stub;
+	if (handler->exit == NULL)
+		handler->exit = process_event_stub;
+	if (handler->lost == NULL)
+		handler->lost = process_event_stub;
+	if (handler->read == NULL)
+		handler->read = process_event_stub;
+	if (handler->throttle == NULL)
+		handler->throttle = process_event_stub;
+	if (handler->unthrottle == NULL)
+		handler->unthrottle = process_event_stub;
+}
+
+static const char *event__name[] = {
+	[0]			 = "TOTAL",
+	[PERF_RECORD_MMAP]	 = "MMAP",
+	[PERF_RECORD_LOST]	 = "LOST",
+	[PERF_RECORD_COMM]	 = "COMM",
+	[PERF_RECORD_EXIT]	 = "EXIT",
+	[PERF_RECORD_THROTTLE]	 = "THROTTLE",
+	[PERF_RECORD_UNTHROTTLE] = "UNTHROTTLE",
+	[PERF_RECORD_FORK]	 = "FORK",
+	[PERF_RECORD_READ]	 = "READ",
+	[PERF_RECORD_SAMPLE]	 = "SAMPLE",
+};
+
+unsigned long event__total[PERF_RECORD_MAX];
+
+void event__print_totals(void)
+{
+	int i;
+	for (i = 0; i < PERF_RECORD_MAX; ++i)
+		pr_info("%10s events: %10ld\n",
+			event__name[i], event__total[i]);
+}
+
+static int perf_session__process_event(struct perf_session *self,
+				       event_t *event,
+				       struct perf_event_ops *ops,
+				       unsigned long offset, unsigned long head)
+{
+	trace_event(event);
+
+	if (event->header.type < PERF_RECORD_MAX) {
+		dump_printf("%p [%p]: PERF_RECORD_%s",
+			    (void *)(offset + head),
+			    (void *)(long)(event->header.size),
+			    event__name[event->header.type]);
+		++event__total[0];
+		++event__total[event->header.type];
+	}
+
+	switch (event->header.type) {
+	case PERF_RECORD_SAMPLE:
+		return ops->sample(event, self);
+	case PERF_RECORD_MMAP:
+		return ops->mmap(event, self);
+	case PERF_RECORD_COMM:
+		return ops->comm(event, self);
+	case PERF_RECORD_FORK:
+		return ops->fork(event, self);
+	case PERF_RECORD_EXIT:
+		return ops->exit(event, self);
+	case PERF_RECORD_LOST:
+		return ops->lost(event, self);
+	case PERF_RECORD_READ:
+		return ops->read(event, self);
+	case PERF_RECORD_THROTTLE:
+		return ops->throttle(event, self);
+	case PERF_RECORD_UNTHROTTLE:
+		return ops->unthrottle(event, self);
+	default:
+		self->unknown_events++;
+		return -1;
+	}
+}
+
+int perf_header__read_build_ids(int input, u64 offset, u64 size)
+{
+	struct build_id_event bev;
+	char filename[PATH_MAX];
+	u64 limit = offset + size;
+	int err = -1;
+
+	while (offset < limit) {
+		struct dso *dso;
+		ssize_t len;
+
+		if (read(input, &bev, sizeof(bev)) != sizeof(bev))
+			goto out;
+
+		len = bev.header.size - sizeof(bev);
+		if (read(input, filename, len) != len)
+			goto out;
+
+		dso = dsos__findnew(filename);
+		if (dso != NULL)
+			dso__set_build_id(dso, &bev.build_id);
+
+		offset += bev.header.size;
+	}
+	err = 0;
+out:
+	return err;
+}
+
+static struct thread *perf_session__register_idle_thread(struct perf_session *self)
+{
+	struct thread *thread = perf_session__findnew(self, 0);
+
+	if (thread == NULL || thread__set_comm(thread, "swapper")) {
+		pr_err("problem inserting idle task.\n");
+		thread = NULL;
+	}
+
+	return thread;
+}
+
+int perf_session__process_events(struct perf_session *self,
+				 struct perf_event_ops *ops)
+{
+	int err;
+	unsigned long head, shift;
+	unsigned long offset = 0;
+	size_t	page_size;
+	event_t *event;
+	uint32_t size;
+	char *buf;
+
+	if (perf_session__register_idle_thread(self) == NULL)
+		return -ENOMEM;
+
+	perf_event_ops__fill_defaults(ops);
+
+	page_size = getpagesize();
+
+	head = self->header.data_offset;
+
+	if (!symbol_conf.full_paths) {
+		char bf[PATH_MAX];
+
+		if (getcwd(bf, sizeof(bf)) == NULL) {
+			err = -errno;
+out_getcwd_err:
+			pr_err("failed to get the current directory\n");
+			goto out_err;
+		}
+		self->cwd = strdup(bf);
+		if (self->cwd == NULL) {
+			err = -ENOMEM;
+			goto out_getcwd_err;
+		}
+		self->cwdlen = strlen(self->cwd);
+	}
+
+	shift = page_size * (head / page_size);
+	offset += shift;
+	head -= shift;
+
+remap:
+	buf = mmap(NULL, page_size * self->mmap_window, PROT_READ,
+		   MAP_SHARED, self->fd, offset);
+	if (buf == MAP_FAILED) {
+		pr_err("failed to mmap file\n");
+		err = -errno;
+		goto out_err;
+	}
+
+more:
+	event = (event_t *)(buf + head);
+
+	size = event->header.size;
+	if (size == 0)
+		size = 8;
+
+	if (head + event->header.size >= page_size * self->mmap_window) {
+		int munmap_ret;
+
+		shift = page_size * (head / page_size);
+
+		munmap_ret = munmap(buf, page_size * self->mmap_window);
+		assert(munmap_ret == 0);
+
+		offset += shift;
+		head -= shift;
+		goto remap;
+	}
+
+	size = event->header.size;
+
+	dump_printf("\n%p [%p]: event: %d\n",
+			(void *)(offset + head),
+			(void *)(long)event->header.size,
+			event->header.type);
+
+	if (size == 0 ||
+	    perf_session__process_event(self, event, ops, offset, head) < 0) {
+		dump_printf("%p [%p]: skipping unknown header type: %d\n",
+			    (void *)(offset + head),
+			    (void *)(long)(event->header.size),
+			    event->header.type);
+		/*
+		 * assume we lost track of the stream, check alignment, and
+		 * increment a single u64 in the hope to catch on again 'soon'.
+		 */
+		if (unlikely(head & 7))
+			head &= ~7ULL;
+
+		size = 8;
+	}
+
+	head += size;
+
+	if (offset + head >= self->header.data_offset + self->header.data_size)
+		goto done;
+
+	if (offset + head < self->size)
+		goto more;
+done:
+	err = 0;
+out_err:
+	return err;
+}
+
+bool perf_session__has_traces(struct perf_session *self, const char *msg)
+{
+	if (!(self->sample_type & PERF_SAMPLE_RAW)) {
+		pr_err("No trace sample to read. Did you call 'perf %s'?\n", msg);
+		return false;
+	}
+
+	return true;
 }

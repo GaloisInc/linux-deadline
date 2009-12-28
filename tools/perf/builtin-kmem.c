@@ -342,22 +342,9 @@ static int process_sample_event(event_t *event, struct perf_session *session)
 	return 0;
 }
 
-static int sample_type_check(struct perf_session *session)
-{
-	if (!(session->sample_type & PERF_SAMPLE_RAW)) {
-		fprintf(stderr,
-			"No trace sample to read. Did you call perf record "
-			"without -R?");
-		return -1;
-	}
-
-	return 0;
-}
-
 static struct perf_event_ops event_ops = {
-	.process_sample_event	= process_sample_event,
-	.process_comm_event	= event__process_comm,
-	.sample_type_check	= sample_type_check,
+	.sample	= process_sample_event,
+	.comm	= event__process_comm,
 };
 
 static double fragmentation(unsigned long n_req, unsigned long n_alloc)
@@ -504,10 +491,13 @@ static void sort_result(void)
 
 static int __cmd_kmem(void)
 {
-	int err;
+	int err = -EINVAL;
 	struct perf_session *session = perf_session__new(input_name, O_RDONLY, 0);
 	if (session == NULL)
 		return -ENOMEM;
+
+	if (!perf_session__has_traces(session, "kmem record"))
+		goto out_delete;
 
 	setup_pager();
 	err = perf_session__process_events(session, &event_ops);

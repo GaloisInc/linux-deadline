@@ -8,6 +8,8 @@
 #include <linux/rbtree.h>
 #include "event.h"
 
+#define DEBUG_CACHE_DIR ".debug"
+
 #ifdef HAVE_CPLUS_DEMANGLE
 extern char *cplus_demangle(const char *, int);
 
@@ -58,7 +60,8 @@ struct symbol_conf {
 			sort_by_name,
 			show_nr_samples,
 			use_callchain,
-			exclude_other;
+			exclude_other,
+			full_paths;
 	const char	*vmlinux_name,
 			*field_sep;
 	char            *dso_list_str,
