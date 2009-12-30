@@ -105,24 +105,28 @@ struct perf_trace_event_type {
 static int event_count;
 static struct perf_trace_event_type *events;
 
-void perf_header__push_event(u64 id, const char *name)
+int perf_header__push_event(u64 id, const char *name)
 {
 	if (strlen(name) > MAX_EVENT_NAME)
 		pr_warning("Event %s will be truncated\n", name);
 
 	if (!events) {
 		events = malloc(sizeof(struct perf_trace_event_type));
-		if (!events)
-			die("nomem");
+		if (events == NULL)
+			return -ENOMEM;
 	} else {
-		events = realloc(events, (event_count + 1) * sizeof(struct perf_trace_event_type));
-		if (!events)
-			die("nomem");
+		struct perf_trace_event_type *nevents;
+
+		nevents = realloc(events, (event_count + 1) * sizeof(*events));
+		if (nevents == NULL)
+			return -ENOMEM;
+		events = nevents;
 	}
 	memset(&events[event_count], 0, sizeof(struct perf_trace_event_type));
 	events[event_count].event_id = id;
 	strncpy(events[event_count].name, name, MAX_EVENT_NAME - 1);
 	event_count++;
+	return 0;
 }
 
 char *perf_header__find_event(u64 id)
@@ -432,19 +436,19 @@ int perf_header__write(struct perf_header *self, int fd, bool at_exit)
 	return 0;
 }
 
-static void do_read(int fd, void *buf, size_t size)
+static int do_read(int fd, void *buf, size_t size)
 {
 	while (size) {
 		int ret = read(fd, buf, size);
 
-		if (ret < 0)
-			die("failed to read");
-		if (ret == 0)
-			die("failed to read: missing data");
+		if (ret <= 0)
+			return -1;
 
 		size -= ret;
 		buf += ret;
 	}
+
+	return 0;
 }
 
 int perf_header__process_sections(struct perf_header *self, int fd,
@@ -455,7 +459,7 @@ int perf_header__process_sections(struct perf_header *self, int fd,
 	int nr_sections;
 	int sec_size;
 	int idx = 0;
-	int err = 0, feat = 1;
+	int err = -1, feat = 1;
 
 	nr_sections = bitmap_weight(self->adds_features, HEADER_FEAT_BITS);
 	if (!nr_sections)
@@ -469,8 +473,10 @@ int perf_header__process_sections(struct perf_header *self, int fd,
 
 	lseek(fd, self->data_offset + self->data_size, SEEK_SET);
 
-	do_read(fd, feat_sec, sec_size);
+	if (do_read(fd, feat_sec, sec_size))
+		goto out_free;
 
+	err = 0;
 	while (idx < nr_sections && feat < HEADER_LAST_FEATURE) {
 		if (perf_header__has_feat(self, feat)) {
 			struct perf_file_section *sec = &feat_sec[idx++];
@@ -481,18 +487,18 @@ int perf_header__process_sections(struct perf_header *self, int fd,
 		}
 		++feat;
 	}
-
+out_free:
 	free(feat_sec);
 	return err;
-};
+}
 
 int perf_file_header__read(struct perf_file_header *self,
 			   struct perf_header *ph, int fd)
 {
 	lseek(fd, 0, SEEK_SET);
-	do_read(fd, self, sizeof(*self));
 
-	if (self->magic     != PERF_MAGIC ||
+	if (do_read(fd, self, sizeof(*self)) ||
+	    self->magic     != PERF_MAGIC ||
 	    self->attr_size != sizeof(struct perf_file_attr))
 		return -1;
 
@@ -558,7 +564,8 @@ int perf_header__read(struct perf_header *self, int fd)
 		struct perf_header_attr *attr;
 		off_t tmp;
 
-		do_read(fd, &f_attr, sizeof(f_attr));
+		if (do_read(fd, &f_attr, sizeof(f_attr)))
+			goto out_errno;
 		tmp = lseek(fd, 0, SEEK_CUR);
 
 		attr = perf_header_attr__new(&f_attr.attr);
@@ -569,7 +576,8 @@ int perf_header__read(struct perf_header *self, int fd)
 		lseek(fd, f_attr.ids.offset, SEEK_SET);
 
 		for (j = 0; j < nr_ids; j++) {
-			do_read(fd, &f_id, sizeof(f_id));
+			if (do_read(fd, &f_id, sizeof(f_id)))
+				goto out_errno;
 
 			if (perf_header_attr__add_id(attr, f_id) < 0) {
 				perf_header_attr__delete(attr);
@@ -589,7 +597,8 @@ int perf_header__read(struct perf_header *self, int fd)
 		events = malloc(f_header.event_types.size);
 		if (events == NULL)
 			return -ENOMEM;
-		do_read(fd, events, f_header.event_types.size);
+		if (do_read(fd, events, f_header.event_types.size))
+			goto out_errno;
 		event_count =  f_header.event_types.size / sizeof(struct perf_trace_event_type);
 	}
 
@@ -599,6 +608,8 @@ int perf_header__read(struct perf_header *self, int fd)
 
 	self->frozen = 1;
 	return 0;
+out_errno:
+	return -errno;
 }
 
 u64 perf_header__sample_type(struct perf_header *header)
