@@ -116,7 +116,7 @@ static inline void __local_bh_disable(unsigned long ip)
 
 void local_bh_disable(void)
 {
-	__local_bh_disable(CALLER_ADDR0);
+	__local_bh_disable((unsigned long)__builtin_return_address(0));
 }
 
 EXPORT_SYMBOL(local_bh_disable);
@@ -132,7 +132,7 @@ void _local_bh_enable(void)
 	WARN_ON_ONCE(!irqs_disabled());
 
 	if (softirq_count() == SOFTIRQ_OFFSET)
-		trace_softirqs_on(CALLER_ADDR0);
+		trace_softirqs_on((unsigned long)__builtin_return_address(0));
 	sub_preempt_count(SOFTIRQ_OFFSET);
 }
 
@@ -167,7 +167,7 @@ static inline void _local_bh_enable_ip(unsigned long ip)
 
 void local_bh_enable(void)
 {
-	_local_bh_enable_ip(CALLER_ADDR0);
+	_local_bh_enable_ip((unsigned long)__builtin_return_address(0));
 }
 EXPORT_SYMBOL(local_bh_enable);
 
@@ -198,7 +198,7 @@ asmlinkage void __do_softirq(void)
 	pending = local_softirq_pending();
 	account_system_vtime(current);
 
-	__local_bh_disable(CALLER_ADDR0);
+	__local_bh_disable((unsigned long)__builtin_return_address(0));
 	lockdep_softirq_enter();
 
 	cpu = smp_processor_id();
