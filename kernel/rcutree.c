@@ -157,6 +157,24 @@ long rcu_batches_completed_bh(void)
 EXPORT_SYMBOL_GPL(rcu_batches_completed_bh);
 
 /*
+ * Force a quiescent state for RCU BH.
+ */
+void rcu_bh_force_quiescent_state(void)
+{
+	force_quiescent_state(&rcu_bh_state, 0);
+}
+EXPORT_SYMBOL_GPL(rcu_bh_force_quiescent_state);
+
+/*
+ * Force a quiescent state for RCU-sched.
+ */
+void rcu_sched_force_quiescent_state(void)
+{
+	force_quiescent_state(&rcu_sched_state, 0);
+}
+EXPORT_SYMBOL_GPL(rcu_sched_force_quiescent_state);
+
+/*
  * Does the CPU have callbacks ready to be invoked?
  */
 static int
@@ -659,7 +677,9 @@ rcu_start_gp(struct rcu_state *rsp, unsigned long flags)
 	struct rcu_data *rdp = rsp->rda[smp_processor_id()];
 	struct rcu_node *rnp = rcu_get_root(rsp);
 
-	if (!cpu_needs_another_gp(rsp, rdp)) {
+	if (!cpu_needs_another_gp(rsp, rdp) || rsp->fqs_active) {
+		if (cpu_needs_another_gp(rsp, rdp))
+			rsp->fqs_need_gp = 1;
 		if (rnp->completed == rsp->completed) {
 			spin_unlock_irqrestore(&rnp->lock, flags);
 			return;
@@ -1144,11 +1164,9 @@ void rcu_check_callbacks(int cpu, int user)
 /*
  * Scan the leaf rcu_node structures, processing dyntick state for any that
  * have not yet encountered a quiescent state, using the function specified.
- * Returns 1 if the current grace period ends while scanning (possibly
- * because we made it end).
+ * The caller must have suppressed start of new grace periods.
  */
-static int rcu_process_dyntick(struct rcu_state *rsp, long lastcomp,
-			       int (*f)(struct rcu_data *))
+static void force_qs_rnp(struct rcu_state *rsp, int (*f)(struct rcu_data *))
 {
 	unsigned long bit;
 	int cpu;
@@ -1159,9 +1177,9 @@ static int rcu_process_dyntick(struct rcu_state *rsp, long lastcomp,
 	rcu_for_each_leaf_node(rsp, rnp) {
 		mask = 0;
 		spin_lock_irqsave(&rnp->lock, flags);
-		if (rnp->completed != lastcomp) {
+		if (!rcu_gp_in_progress(rsp)) {
 			spin_unlock_irqrestore(&rnp->lock, flags);
-			return 1;
+			return;
 		}
 		if (rnp->qsmask == 0) {
 			spin_unlock_irqrestore(&rnp->lock, flags);
@@ -1173,7 +1191,7 @@ static int rcu_process_dyntick(struct rcu_state *rsp, long lastcomp,
 			if ((rnp->qsmask & bit) != 0 && f(rsp->rda[cpu]))
 				mask |= bit;
 		}
-		if (mask != 0 && rnp->completed == lastcomp) {
+		if (mask != 0) {
 
 			/* rcu_report_qs_rnp() releases rnp->lock. */
 			rcu_report_qs_rnp(mask, rsp, rnp, flags);
@@ -1181,7 +1199,6 @@ static int rcu_process_dyntick(struct rcu_state *rsp, long lastcomp,
 		}
 		spin_unlock_irqrestore(&rnp->lock, flags);
 	}
-	return 0;
 }
 
 /*
@@ -1191,10 +1208,7 @@ static int rcu_process_dyntick(struct rcu_state *rsp, long lastcomp,
 static void force_quiescent_state(struct rcu_state *rsp, int relaxed)
 {
 	unsigned long flags;
-	long lastcomp;
 	struct rcu_node *rnp = rcu_get_root(rsp);
-	u8 signaled;
-	u8 forcenow;
 
 	if (!rcu_gp_in_progress(rsp))
 		return;  /* No grace period in progress, nothing to force. */
@@ -1204,19 +1218,17 @@ static void force_quiescent_state(struct rcu_state *rsp, int relaxed)
 	}
 	if (relaxed &&
 	    (long)(rsp->jiffies_force_qs - jiffies) >= 0)
-		goto unlock_ret; /* no emergency and done recently. */
+		goto unlock_fqs_ret; /* no emergency and done recently. */
 	rsp->n_force_qs++;
-	spin_lock(&rnp->lock);
-	lastcomp = rsp->gpnum - 1;
-	signaled = rsp->signaled;
+	spin_lock(&rnp->lock);  /* irqs already disabled */
 	rsp->jiffies_force_qs = jiffies + RCU_JIFFIES_TILL_FORCE_QS;
 	if(!rcu_gp_in_progress(rsp)) {
 		rsp->n_force_qs_ngp++;
-		spin_unlock(&rnp->lock);
-		goto unlock_ret;  /* no GP in progress, time updated. */
+		spin_unlock(&rnp->lock);  /* irqs remain disabled */
+		goto unlock_fqs_ret;  /* no GP in progress, time updated. */
 	}
-	spin_unlock(&rnp->lock);
-	switch (signaled) {
+	rsp->fqs_active = 1;
+	switch (rsp->signaled) {
 	case RCU_GP_IDLE:
 	case RCU_GP_INIT:
 
@@ -1224,44 +1236,37 @@ static void force_quiescent_state(struct rcu_state *rsp, int relaxed)
 
 	case RCU_SAVE_DYNTICK:
 
+		spin_unlock(&rnp->lock);  /* irqs remain disabled */
 		if (RCU_SIGNAL_INIT != RCU_SAVE_DYNTICK)
 			break; /* So gcc recognizes the dead code. */
 
 		/* Record dyntick-idle state. */
-		if (rcu_process_dyntick(rsp, lastcomp,
-					dyntick_save_progress_counter))
-			goto unlock_ret;
-		/* fall into next case. */
-
-	case RCU_SAVE_COMPLETED:
-
-		/* Update state, record completion counter. */
-		forcenow = 0;
-		spin_lock(&rnp->lock);
-		if (lastcomp + 1 == rsp->gpnum &&
-		    lastcomp == rsp->completed &&
-		    rsp->signaled == signaled) {
+		force_qs_rnp(rsp, dyntick_save_progress_counter);
+		spin_lock(&rnp->lock);  /* irqs already disabled */
+		if (rcu_gp_in_progress(rsp))
 			rsp->signaled = RCU_FORCE_QS;
-			rsp->completed_fqs = lastcomp;
-			forcenow = signaled == RCU_SAVE_COMPLETED;
-		}
-		spin_unlock(&rnp->lock);
-		if (!forcenow)
-			break;
-		/* fall into next case. */
+		break;
 
 	case RCU_FORCE_QS:
 
 		/* Check dyntick-idle state, send IPI to laggarts. */
-		if (rcu_process_dyntick(rsp, rsp->completed_fqs,
-					rcu_implicit_dynticks_qs))
-			goto unlock_ret;
+		spin_unlock(&rnp->lock);  /* irqs remain disabled */
+		force_qs_rnp(rsp, rcu_implicit_dynticks_qs);
 
 		/* Leave state in case more forcing is required. */
 
+		spin_lock(&rnp->lock);  /* irqs already disabled */
 		break;
 	}
-unlock_ret:
+	rsp->fqs_active = 0;
+	if (rsp->fqs_need_gp) {
+		spin_unlock(&rsp->fqslock); /* irqs remain disabled */
+		rsp->fqs_need_gp = 0;
+		rcu_start_gp(rsp, flags); /* releases rnp->lock */
+		return;
+	}
+	spin_unlock(&rnp->lock);  /* irqs remain disabled */
+unlock_fqs_ret:
 	spin_unlock_irqrestore(&rsp->fqslock, flags);
 }
 
@@ -1806,10 +1811,16 @@ static void __init rcu_init_levelspread(struct rcu_state *rsp)
  */
 static void __init rcu_init_one(struct rcu_state *rsp)
 {
+	static char *buf[] = { "rcu_node_level_0",
+			       "rcu_node_level_1",
+			       "rcu_node_level_2",
+			       "rcu_node_level_3" };  /* Match MAX_RCU_LVLS */
 	int cpustride = 1;
 	int i;
 	int j;
 	struct rcu_node *rnp;
+
+	BUILD_BUG_ON(MAX_RCU_LVLS > ARRAY_SIZE(buf));  /* Fix buf[] init! */
 
 	/* Initialize the level-tracking arrays. */
 
@@ -1824,7 +1835,8 @@ static void __init rcu_init_one(struct rcu_state *rsp)
 		rnp = rsp->level[i];
 		for (j = 0; j < rsp->levelcnt[i]; j++, rnp++) {
 			spin_lock_init(&rnp->lock);
-			lockdep_set_class(&rnp->lock, &rcu_node_class[i]);
+			lockdep_set_class_and_name(&rnp->lock,
+						   &rcu_node_class[i], buf[i]);
 			rnp->gpnum = 0;
 			rnp->qsmask = 0;
 			rnp->qsmaskinit = 0;

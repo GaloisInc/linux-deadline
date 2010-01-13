@@ -237,12 +237,11 @@ struct rcu_data {
 #define RCU_GP_IDLE		0	/* No grace period in progress. */
 #define RCU_GP_INIT		1	/* Grace period being initialized. */
 #define RCU_SAVE_DYNTICK	2	/* Need to scan dyntick state. */
-#define RCU_SAVE_COMPLETED	3	/* Need to save rsp->completed. */
-#define RCU_FORCE_QS		4	/* Need to force quiescent state. */
+#define RCU_FORCE_QS		3	/* Need to force quiescent state. */
 #ifdef CONFIG_NO_HZ
 #define RCU_SIGNAL_INIT		RCU_SAVE_DYNTICK
 #else /* #ifdef CONFIG_NO_HZ */
-#define RCU_SIGNAL_INIT		RCU_SAVE_COMPLETED
+#define RCU_SIGNAL_INIT		RCU_FORCE_QS
 #endif /* #else #ifdef CONFIG_NO_HZ */
 
 #define RCU_JIFFIES_TILL_FORCE_QS	 3	/* for rsp->jiffies_force_qs */
@@ -277,6 +276,13 @@ struct rcu_state {
 
 	u8	signaled ____cacheline_internodealigned_in_smp;
 						/* Force QS state. */
+	u8	fqs_active;			/* force_quiescent_state() */
+						/*  is running. */
+	u8	fqs_need_gp;			/* A CPU was prevented from */
+						/*  starting a new grace */
+						/*  period because */
+						/*  force_quiescent_state() */
+						/*  was running. */
 	long	gpnum;				/* Current gp number. */
 	long	completed;			/* # of last completed gp. */
 
@@ -294,8 +300,6 @@ struct rcu_state {
 	long orphan_qlen;			/* Number of orphaned cbs. */
 	spinlock_t fqslock;			/* Only one task forcing */
 						/*  quiescent states. */
-	long	completed_fqs;			/* Value of completed @ snap. */
-						/*  Protected by fqslock. */
 	unsigned long jiffies_force_qs;		/* Time at which to invoke */
 						/*  force_quiescent_state(). */
 	unsigned long n_force_qs;		/* Number of calls to */

@@ -62,6 +62,15 @@ long rcu_batches_completed(void)
 EXPORT_SYMBOL_GPL(rcu_batches_completed);
 
 /*
+ * Force a quiescent state for preemptible RCU.
+ */
+void rcu_force_quiescent_state(void)
+{
+	force_quiescent_state(&rcu_preempt_state, 0);
+}
+EXPORT_SYMBOL_GPL(rcu_force_quiescent_state);
+
+/*
  * Record a preemptable-RCU quiescent state for the specified CPU.  Note
  * that this just means that the task currently running on the CPU is
  * not in a quiescent state.  There might be any number of tasks blocked
@@ -295,6 +304,9 @@ void __rcu_read_unlock(void)
 	if (--ACCESS_ONCE(t->rcu_read_lock_nesting) == 0 &&
 	    unlikely(ACCESS_ONCE(t->rcu_read_unlock_special)))
 		rcu_read_unlock_special(t);
+#ifdef CONFIG_PROVE_LOCKING
+	WARN_ON_ONCE(ACCESS_ONCE(t->rcu_read_lock_nesting) < 0);
+#endif /* #ifdef CONFIG_PROVE_LOCKING */
 }
 EXPORT_SYMBOL_GPL(__rcu_read_unlock);
 
@@ -711,6 +723,16 @@ long rcu_batches_completed(void)
 	return rcu_batches_completed_sched();
 }
 EXPORT_SYMBOL_GPL(rcu_batches_completed);
+
+/*
+ * Force a quiescent state for RCU, which, because there is no preemptible
+ * RCU, becomes the same as rcu-sched.
+ */
+void rcu_force_quiescent_state(void)
+{
+	rcu_sched_force_quiescent_state();
+}
+EXPORT_SYMBOL_GPL(rcu_force_quiescent_state);
 
 /*
  * Because preemptable RCU does not exist, we never have to check for
