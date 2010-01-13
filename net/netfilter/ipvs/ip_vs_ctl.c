@@ -2077,9 +2077,9 @@ do_ip_vs_set_ctl(struct sock *sk, int cmd, void __user *user, unsigned int len)
 	if (!capable(CAP_NET_ADMIN))
 		return -EPERM;
 
-	if (cmd < IP_VS_BASE_CTL || cmd > IP_VS_SO_SET_MAX + 1)
+	if (cmd < IP_VS_BASE_CTL || cmd > IP_VS_SO_SET_MAX)
 		return -EINVAL;
-	if (len < 0 || len >  sizeof(arg))
+	if (len < 0 || len >  MAX_ARG_LEN)
 		return -EINVAL;
 	if (len != set_arglen[SET_CMDID(cmd)]) {
 		pr_err("set_ctl: len %u != %u\n",
@@ -2361,7 +2361,7 @@ do_ip_vs_get_ctl(struct sock *sk, int cmd, void __user *user, int *len)
 	if (!capable(CAP_NET_ADMIN))
 		return -EPERM;
 
-	if (cmd < IP_VS_BASE_CTL || cmd > IP_VS_SO_GET_MAX + 1)
+	if (cmd < IP_VS_BASE_CTL || cmd > IP_VS_SO_GET_MAX)
 		return -EINVAL;
 
 	if (*len < get_arglen[GET_CMDID(cmd)]) {
@@ -2371,7 +2371,7 @@ do_ip_vs_get_ctl(struct sock *sk, int cmd, void __user *user, int *len)
 	}
 
 	copylen = get_arglen[GET_CMDID(cmd)];
-	if (copylen > sizeof(arg))
+	if (copylen > 128)
 		return -EINVAL;
 
 	if (copy_from_user(arg, user, copylen) != 0)
