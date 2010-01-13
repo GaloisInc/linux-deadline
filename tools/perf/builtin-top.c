@@ -667,7 +667,7 @@ static void prompt_symbol(struct sym_entry **target, const char *msg)
 	}
 
 	if (!found) {
-		fprintf(stderr, "Sorry, %s is not active.\n", sym_filter);
+		fprintf(stderr, "Sorry, %s is not active.\n", buf);
 		sleep(1);
 		return;
 	} else
@@ -1164,6 +1164,11 @@ static int __cmd_top(void)
 	struct perf_session *session = perf_session__new(NULL, O_WRONLY, false);
 	if (session == NULL)
 		return -ENOMEM;
+
+	if (perf_session__create_kernel_maps(session) < 0) {
+		pr_err("Problems creating kernel maps\n");
+		return -1;
+	}
 
 	if (target_pid != -1)
 		event__synthesize_thread(target_pid, event__process, session);
