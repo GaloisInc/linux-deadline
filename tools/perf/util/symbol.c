@@ -64,7 +64,7 @@ static void dso__set_sorted_by_name(struct dso *self, enum map_type type)
 	self->sorted_by_name |= (1 << type);
 }
 
-static bool symbol_type__is_a(char symbol_type, enum map_type map_type)
+bool symbol_type__is_a(char symbol_type, enum map_type map_type)
 {
 	switch (map_type) {
 	case MAP__FUNCTION:
@@ -383,16 +383,12 @@ size_t dso__fprintf(struct dso *self, enum map_type type, FILE *fp)
 	return ret;
 }
 
-/*
- * Loads the function entries in /proc/kallsyms into kernel_map->dso,
- * so that we can in the next step set the symbol ->end address and then
- * call kernel_maps__split_kallsyms.
- */
-static int dso__load_all_kallsyms(struct dso *self, struct map *map)
+int kallsyms__parse(void *arg, int (*process_symbol)(void *arg, const char *name,
+						     char type, u64 start))
 {
 	char *line = NULL;
 	size_t n;
-	struct rb_root *root = &self->symbols[map->type];
+	int err = 0;
 	FILE *file = fopen("/proc/kallsyms", "r");
 
 	if (file == NULL)
@@ -400,7 +396,6 @@ static int dso__load_all_kallsyms(struct dso *self, struct map *map)
 
 	while (!feof(file)) {
 		u64 start;
-		struct symbol *sym;
 		int line_len, len;
 		char symbol_type;
 		char *symbol_name;
@@ -421,33 +416,60 @@ static int dso__load_all_kallsyms(struct dso *self, struct map *map)
 			continue;
 
 		symbol_type = toupper(line[len]);
-		if (!symbol_type__is_a(symbol_type, map->type))
-			continue;
-
 		symbol_name = line + len + 2;
-		/*
-		 * Will fix up the end later, when we have all symbols sorted.
-		 */
-		sym = symbol__new(start, 0, symbol_name);
 
-		if (sym == NULL)
-			goto out_delete_line;
-		/*
-		 * We will pass the symbols to the filter later, in
-		 * map__split_kallsyms, when we have split the maps per module
-		 */
-		symbols__insert(root, sym);
+		err = process_symbol(arg, symbol_name, symbol_type, start);
+		if (err)
+			break;
 	}
 
 	free(line);
 	fclose(file);
+	return err;
 
-	return 0;
-
-out_delete_line:
-	free(line);
 out_failure:
 	return -1;
+}
+
+struct process_kallsyms_args {
+	struct map *map;
+	struct dso *dso;
+};
+
+static int map__process_kallsym_symbol(void *arg, const char *name,
+				       char type, u64 start)
+{
+	struct symbol *sym;
+	struct process_kallsyms_args *a = arg;
+	struct rb_root *root = &a->dso->symbols[a->map->type];
+
+	if (!symbol_type__is_a(type, a->map->type))
+		return 0;
+
+	/*
+	 * Will fix up the end later, when we have all symbols sorted.
+	 */
+	sym = symbol__new(start, 0, name);
+
+	if (sym == NULL)
+		return -ENOMEM;
+	/*
+	 * We will pass the symbols to the filter later, in
+	 * map__split_kallsyms, when we have split the maps per module
+	 */
+	symbols__insert(root, sym);
+	return 0;
+}
+
+/*
+ * Loads the function entries in /proc/kallsyms into kernel_map->dso,
+ * so that we can in the next step set the symbol ->end address and then
+ * call kernel_maps__split_kallsyms.
+ */
+static int dso__load_all_kallsyms(struct dso *self, struct map *map)
+{
+	struct process_kallsyms_args args = { .map = map, .dso = self, };
+	return kallsyms__parse(&args, map__process_kallsym_symbol);
 }
 
 /*
@@ -934,10 +956,14 @@ static int dso__load_sym(struct dso *self, struct map *map,
 
 	elf_symtab__for_each_symbol(syms, nr_syms, idx, sym) {
 		struct symbol *f;
-		const char *elf_name;
+		const char *elf_name = elf_sym__name(&sym, symstrs);
 		char *demangled = NULL;
 		int is_label = elf_sym__is_label(&sym);
 		const char *section_name;
+
+		if (kernel && session->ref_reloc_sym.name != NULL &&
+		    strcmp(elf_name, session->ref_reloc_sym.name) == 0)
+			perf_session__reloc_vmlinux_maps(session, sym.st_value);
 
 		if (!is_label && !elf_sym__is_a(&sym, map->type))
 			continue;
@@ -951,7 +977,6 @@ static int dso__load_sym(struct dso *self, struct map *map,
 		if (is_label && !elf_sec__is_a(&shdr, secstrs, map->type))
 			continue;
 
-		elf_name = elf_sym__name(&sym, symstrs);
 		section_name = elf_sec__name(&shdr, secstrs);
 
 		if (kernel || kmodule) {
@@ -1590,14 +1615,14 @@ static struct dso *dsos__find(struct list_head *head, const char *name)
 	return NULL;
 }
 
-struct dso *dsos__findnew(const char *name)
+struct dso *__dsos__findnew(struct list_head *head, const char *name)
 {
-	struct dso *dso = dsos__find(&dsos__user, name);
+	struct dso *dso = dsos__find(head, name);
 
 	if (!dso) {
 		dso = dso__new(name);
 		if (dso != NULL) {
-			dsos__add(&dsos__user, dso);
+			dsos__add(head, dso);
 			dso__set_basename(dso);
 		}
 	}
@@ -1640,7 +1665,7 @@ size_t dsos__fprintf_buildid(FILE *fp)
 		__dsos__fprintf_buildid(&dsos__user, fp));
 }
 
-static struct dso *dsos__create_kernel( const char *vmlinux)
+static struct dso *dsos__create_kernel(const char *vmlinux)
 {
 	struct dso *kernel = dso__new(vmlinux ?: "[kernel.kallsyms]");
 
@@ -1669,28 +1694,25 @@ out_delete_kernel_dso:
 	return NULL;
 }
 
-static int map_groups__create_kernel_maps(struct map_groups *self, const char *vmlinux)
+static int map_groups__create_kernel_maps(struct map_groups *self,
+					  struct map *vmlinux_maps[MAP__NR_TYPES],
+					  const char *vmlinux)
 {
-	struct map *functions, *variables;
 	struct dso *kernel = dsos__create_kernel(vmlinux);
+	enum map_type type;
 
 	if (kernel == NULL)
 		return -1;
 
-	functions = map__new2(0, kernel, MAP__FUNCTION);
-	if (functions == NULL)
-		return -1;
+	for (type = 0; type < MAP__NR_TYPES; ++type) {
+		vmlinux_maps[type] = map__new2(0, kernel, type);
+		if (vmlinux_maps[type] == NULL)
+			return -1;
 
-	variables = map__new2(0, kernel, MAP__VARIABLE);
-	if (variables == NULL) {
-		map__delete(functions);
-		return -1;
+		vmlinux_maps[type]->map_ip =
+			vmlinux_maps[type]->unmap_ip = identity__map_ip;
+		map_groups__insert(self, vmlinux_maps[type]);
 	}
-
-	functions->map_ip = functions->unmap_ip =
-		variables->map_ip = variables->unmap_ip = identity__map_ip;
-	map_groups__insert(self, functions);
-	map_groups__insert(self, variables);
 
 	return 0;
 }
@@ -1802,7 +1824,7 @@ out_free_comm_list:
 
 int perf_session__create_kernel_maps(struct perf_session *self)
 {
-	if (map_groups__create_kernel_maps(&self->kmaps,
+	if (map_groups__create_kernel_maps(&self->kmaps, self->vmlinux_maps,
 					   symbol_conf.vmlinux_name) < 0)
 		return -1;
 

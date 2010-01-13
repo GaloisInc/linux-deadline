@@ -115,9 +115,17 @@ bool dso__sorted_by_name(const struct dso *self, enum map_type type);
 
 void dso__sort_by_name(struct dso *self, enum map_type type);
 
+extern struct list_head dsos__user, dsos__kernel;
+
+struct dso *__dsos__findnew(struct list_head *head, const char *name);
+
+static inline struct dso *dsos__findnew(const char *name)
+{
+	return __dsos__findnew(&dsos__user, name);
+}
+
 struct perf_session;
 
-struct dso *dsos__findnew(const char *name);
 int dso__load(struct dso *self, struct map *map, struct perf_session *session,
 	      symbol_filter_t filter);
 void dsos__fprintf(FILE *fp);
@@ -135,10 +143,13 @@ int filename__read_build_id(const char *filename, void *bf, size_t size);
 int sysfs__read_build_id(const char *filename, void *bf, size_t size);
 bool dsos__read_build_ids(void);
 int build_id__sprintf(u8 *self, int len, char *bf);
+int kallsyms__parse(void *arg, int (*process_symbol)(void *arg, const char *name,
+						     char type, u64 start));
 
 int symbol__init(void);
+bool symbol_type__is_a(char symbol_type, enum map_type map_type);
+
 int perf_session__create_kernel_maps(struct perf_session *self);
 
-extern struct list_head dsos__user, dsos__kernel;
 extern struct dso *vdso;
 #endif /* __PERF_SYMBOL */

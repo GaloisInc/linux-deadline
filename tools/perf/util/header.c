@@ -173,17 +173,29 @@ static int do_write(int fd, const void *buf, size_t size)
 	return 0;
 }
 
+#define NAME_ALIGN 64
+
+static int write_padded(int fd, const void *bf, size_t count,
+			size_t count_aligned)
+{
+	static const char zero_buf[NAME_ALIGN];
+	int err = do_write(fd, bf, count);
+
+	if (!err)
+		err = do_write(fd, zero_buf, count_aligned - count);
+
+	return err;
+}
+
 #define dsos__for_each_with_build_id(pos, head)	\
 	list_for_each_entry(pos, head, node)	\
 		if (!pos->has_build_id)		\
 			continue;		\
 		else
 
-static int __dsos__write_buildid_table(struct list_head *head, int fd)
+static int __dsos__write_buildid_table(struct list_head *head, u16 misc, int fd)
 {
-#define NAME_ALIGN	64
 	struct dso *pos;
-	static const char zero_buf[NAME_ALIGN];
 
 	dsos__for_each_with_build_id(pos, head) {
 		int err;
@@ -193,14 +205,13 @@ static int __dsos__write_buildid_table(struct list_head *head, int fd)
 		len = ALIGN(len, NAME_ALIGN);
 		memset(&b, 0, sizeof(b));
 		memcpy(&b.build_id, pos->build_id, sizeof(pos->build_id));
+		b.header.misc = misc;
 		b.header.size = sizeof(b) + len;
 		err = do_write(fd, &b, sizeof(b));
 		if (err < 0)
 			return err;
-		err = do_write(fd, pos->long_name, pos->long_name_len + 1);
-		if (err < 0)
-			return err;
-		err = do_write(fd, zero_buf, len - pos->long_name_len - 1);
+		err = write_padded(fd, pos->long_name,
+				   pos->long_name_len + 1, len);
 		if (err < 0)
 			return err;
 	}
@@ -210,9 +221,11 @@ static int __dsos__write_buildid_table(struct list_head *head, int fd)
 
 static int dsos__write_buildid_table(int fd)
 {
-	int err = __dsos__write_buildid_table(&dsos__kernel, fd);
+	int err = __dsos__write_buildid_table(&dsos__kernel,
+					      PERF_RECORD_MISC_KERNEL, fd);
 	if (err == 0)
-		err = __dsos__write_buildid_table(&dsos__user, fd);
+		err = __dsos__write_buildid_table(&dsos__user,
+						  PERF_RECORD_MISC_USER, fd);
 	return err;
 }
 

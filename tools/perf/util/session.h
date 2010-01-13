@@ -18,11 +18,16 @@ struct perf_session {
 	struct map_groups	kmaps;
 	struct rb_root		threads;
 	struct thread		*last_match;
+	struct map		*vmlinux_maps[MAP__NR_TYPES];
 	struct events_stats	events_stats;
 	unsigned long		event_total[PERF_RECORD_MAX];
 	unsigned long		unknown_events;
 	struct rb_root		hists;
 	u64			sample_type;
+	struct {
+		const char	*name;
+		u64		addr;
+	}			ref_reloc_sym;
 	int			fd;
 	int			cwdlen;
 	char			*cwd;
@@ -57,5 +62,11 @@ struct symbol **perf_session__resolve_callchain(struct perf_session *self,
 bool perf_session__has_traces(struct perf_session *self, const char *msg);
 
 int perf_header__read_build_ids(int input, u64 offset, u64 file_size);
+
+int perf_session__set_kallsyms_ref_reloc_sym(struct perf_session *self,
+					     const char *symbol_name,
+					     u64 addr);
+void perf_session__reloc_vmlinux_maps(struct perf_session *self,
+				      u64 unrelocated_addr);
 
 #endif /* __PERF_SESSION_H */

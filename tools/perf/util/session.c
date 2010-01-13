@@ -255,6 +255,7 @@ int perf_header__read_build_ids(int input, u64 offset, u64 size)
 	while (offset < limit) {
 		struct dso *dso;
 		ssize_t len;
+		struct list_head *head = &dsos__user;
 
 		if (read(input, &bev, sizeof(bev)) != sizeof(bev))
 			goto out;
@@ -263,7 +264,10 @@ int perf_header__read_build_ids(int input, u64 offset, u64 size)
 		if (read(input, filename, len) != len)
 			goto out;
 
-		dso = dsos__findnew(filename);
+		if (bev.header.misc & PERF_RECORD_MISC_KERNEL)
+			head = &dsos__kernel;
+
+		dso = __dsos__findnew(head, filename);
 		if (dso != NULL)
 			dso__set_build_id(dso, &bev.build_id);
 
@@ -400,4 +404,50 @@ bool perf_session__has_traces(struct perf_session *self, const char *msg)
 	}
 
 	return true;
+}
+
+int perf_session__set_kallsyms_ref_reloc_sym(struct perf_session *self,
+					     const char *symbol_name,
+					     u64 addr)
+{
+	char *bracket;
+
+	self->ref_reloc_sym.name = strdup(symbol_name);
+	if (self->ref_reloc_sym.name == NULL)
+		return -ENOMEM;
+
+	bracket = strchr(self->ref_reloc_sym.name, ']');
+	if (bracket)
+		*bracket = '\0';
+
+	self->ref_reloc_sym.addr = addr;
+	return 0;
+}
+
+static u64 map__reloc_map_ip(struct map *map, u64 ip)
+{
+	return ip + (s64)map->pgoff;
+}
+
+static u64 map__reloc_unmap_ip(struct map *map, u64 ip)
+{
+	return ip - (s64)map->pgoff;
+}
+
+void perf_session__reloc_vmlinux_maps(struct perf_session *self,
+				      u64 unrelocated_addr)
+{
+	enum map_type type;
+	s64 reloc = unrelocated_addr - self->ref_reloc_sym.addr;
+
+	if (!reloc)
+		return;
+
+	for (type = 0; type < MAP__NR_TYPES; ++type) {
+		struct map *map = self->vmlinux_maps[type];
+
+		map->map_ip = map__reloc_map_ip;
+		map->unmap_ip = map__reloc_unmap_ip;
+		map->pgoff = reloc;
+	}
 }
