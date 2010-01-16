@@ -110,7 +110,10 @@ static int event__synthesize_mmap_events(pid_t pid, pid_t tgid,
 	while (1) {
 		char bf[BUFSIZ], *pbf = bf;
 		event_t ev = {
-			.header = { .type = PERF_RECORD_MMAP },
+			.header = {
+				.type = PERF_RECORD_MMAP,
+				.misc = 0, /* Just like the kernel, see kernel/perf_event.c __perf_event_mmap */
+			 },
 		};
 		int n;
 		size_t size;
@@ -170,6 +173,7 @@ int event__synthesize_modules(event__handler_t process,
 
 		size = ALIGN(pos->dso->long_name_len + 1, sizeof(u64));
 		memset(&ev, 0, sizeof(ev));
+		ev.mmap.header.misc = 1; /* kernel uses 0 for user space maps, see kernel/perf_event.c __perf_event_mmap */
 		ev.mmap.header.type = PERF_RECORD_MMAP;
 		ev.mmap.header.size = (sizeof(ev.mmap) -
 				        (sizeof(ev.mmap.filename) - size));
@@ -223,7 +227,12 @@ static int find_symbol_cb(void *arg, const char *name, char type, u64 start)
 {
 	struct process_symbol_args *args = arg;
 
-	if (!symbol_type__is_a(type, MAP__FUNCTION) || strcmp(name, args->name))
+	/*
+	 * Must be a function or at least an alias, as in PARISC64, where "_text" is
+	 * an 'A' to the same address as "_stext".
+	 */
+	if (!(symbol_type__is_a(type, MAP__FUNCTION) ||
+	      type == 'A') || strcmp(name, args->name))
 		return 0;
 
 	args->start = start;
@@ -236,7 +245,10 @@ int event__synthesize_kernel_mmap(event__handler_t process,
 {
 	size_t size;
 	event_t ev = {
-		.header = { .type = PERF_RECORD_MMAP },
+		.header = {
+			.type = PERF_RECORD_MMAP,
+			.misc = 1, /* kernel uses 0 for user space maps, see kernel/perf_event.c __perf_event_mmap */
+		},
 	};
 	/*
 	 * We should get this from /sys/kernel/sections/.text, but till that is
@@ -245,7 +257,7 @@ int event__synthesize_kernel_mmap(event__handler_t process,
 	 */
 	struct process_symbol_args args = { .name = symbol_name, };
 
-	if (kallsyms__parse(&args, find_symbol_cb) <= 0)
+	if (kallsyms__parse("/proc/kallsyms", &args, find_symbol_cb) <= 0)
 		return -ENOENT;
 
 	size = snprintf(ev.mmap.filename, sizeof(ev.mmap.filename),
@@ -313,12 +325,9 @@ int event__process_mmap(event_t *self, struct perf_session *session)
 	struct thread *thread;
 	struct map *map;
 
-	dump_printf(" %d/%d: [%p(%p) @ %p]: %s\n",
-		    self->mmap.pid, self->mmap.tid,
-		    (void *)(long)self->mmap.start,
-		    (void *)(long)self->mmap.len,
-		    (void *)(long)self->mmap.pgoff,
-		    self->mmap.filename);
+	dump_printf(" %d/%d: [%#Lx(%#Lx) @ %#Lx]: %s\n",
+		    self->mmap.pid, self->mmap.tid, self->mmap.start,
+		    self->mmap.len, self->mmap.pgoff, self->mmap.filename);
 
 	if (self->mmap.pid == 0) {
 		static const char kmmap_prefix[] = "[kernel.kallsyms.";
@@ -341,15 +350,15 @@ int event__process_mmap(event_t *self, struct perf_session *session)
 
 			map = perf_session__new_module_map(session,
 							   self->mmap.start,
-							   short_module_name);
+							   self->mmap.filename);
 			if (map == NULL)
 				goto out_problem;
 
-			name = strdup(self->mmap.filename);
+			name = strdup(short_module_name);
 			if (name == NULL)
 				goto out_problem;
 
-			dso__set_long_name(map->dso, name);
+			map->dso->short_name = name;
 			map->end = map->start + self->mmap.len;
 		} else if (memcmp(self->mmap.filename, kmmap_prefix,
 				sizeof(kmmap_prefix) - 1) == 0) {
@@ -418,11 +427,10 @@ int event__process_task(event_t *self, struct perf_session *session)
 	return 0;
 }
 
-void thread__find_addr_location(struct thread *self,
-				struct perf_session *session, u8 cpumode,
-				enum map_type type, u64 addr,
-				struct addr_location *al,
-				symbol_filter_t filter)
+void thread__find_addr_map(struct thread *self,
+			   struct perf_session *session, u8 cpumode,
+			   enum map_type type, u64 addr,
+			   struct addr_location *al)
 {
 	struct map_groups *mg = &self->mg;
 
@@ -437,7 +445,6 @@ void thread__find_addr_location(struct thread *self,
 	else {
 		al->level = 'H';
 		al->map = NULL;
-		al->sym = NULL;
 		return;
 	}
 try_again:
@@ -456,11 +463,21 @@ try_again:
 			mg = &session->kmaps;
 			goto try_again;
 		}
-		al->sym = NULL;
-	} else {
+	} else
 		al->addr = al->map->map_ip(al->map, al->addr);
+}
+
+void thread__find_addr_location(struct thread *self,
+				struct perf_session *session, u8 cpumode,
+				enum map_type type, u64 addr,
+				struct addr_location *al,
+				symbol_filter_t filter)
+{
+	thread__find_addr_map(self, session, cpumode, type, addr, al);
+	if (al->map != NULL)
 		al->sym = map__find_symbol(al->map, session, al->addr, filter);
-	}
+	else
+		al->sym = NULL;
 }
 
 static void dso__calc_col_width(struct dso *self)
