@@ -1650,12 +1650,12 @@ static int dso__load_kernel_sym(struct dso *self, struct map *map,
 			     getenv("HOME"), sbuild_id) == -1)
 			return -1;
 
+		kallsyms_filename = kallsyms_allocated_filename;
+
 		if (access(kallsyms_filename, F_OK)) {
 			free(kallsyms_allocated_filename);
 			return -1;
 		}
-
-		kallsyms_filename = kallsyms_allocated_filename;
 	} else {
 		/*
 		 * Last resort, if we don't have a build-id and couldn't find
@@ -1671,7 +1671,7 @@ do_kallsyms:
 out_try_fixup:
 	if (err > 0) {
 out_fixup:
-		if (kallsyms_filename == NULL)
+		if (kallsyms_filename != NULL)
 			dso__set_long_name(self, strdup("[kernel.kallsyms]"));
 		map__fixup_start(map);
 		map__fixup_end(map);
