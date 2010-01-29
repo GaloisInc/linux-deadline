@@ -5504,6 +5504,45 @@ SYSCALL_DEFINE0(sched_yield)
 	return 0;
 }
 
+/**
+ * sys_sched_wait_interval - sleep according to the scheduling class rules.
+ *
+ * This function is implemented inside each scheduling class, in case it
+ * wants to provide its tasks a mean of waiting a specific instant in
+ * time, while also honouring some specific rule of itself.
+ */
+SYSCALL_DEFINE2(sched_wait_interval,
+	const struct timespec __user *, rqtp,
+	struct timespec __user *, rmtp)
+{
+	struct timespec lrq, lrm;
+	int ret;
+
+	if (rqtp != NULL) {
+		if (copy_from_user(&lrq, rqtp, sizeof(struct timespec)))
+			return -EFAULT;
+		if (!timespec_valid(&lrq))
+			return -EINVAL;
+	}
+
+	if (current->sched_class->wait_interval)
+		ret = current->sched_class->wait_interval(current,
+							  rqtp ? &lrq : NULL,
+							  &lrm);
+	else {
+		if (!rqtp)
+			return -EINVAL;
+
+		ret = hrtimer_nanosleep(&lrq, &lrm, HRTIMER_MODE_ABS,
+					CLOCK_MONOTONIC);
+	}
+
+	if (rmtp && copy_to_user(rmtp, &lrm, sizeof(struct timespec)))
+		return -EFAULT;
+
+	return ret;
+}
+
 static inline int should_resched(void)
 {
 	return need_resched() && !(preempt_count() & PREEMPT_ACTIVE);

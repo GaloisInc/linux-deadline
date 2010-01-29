@@ -1116,6 +1116,8 @@ struct sched_class {
 	void (*enqueue_task) (struct rq *rq, struct task_struct *p, int flags);
 	void (*dequeue_task) (struct rq *rq, struct task_struct *p, int flags);
 	void (*yield_task) (struct rq *rq);
+	long (*wait_interval) (struct task_struct *p, struct timespec *rqtp,
+			       struct timespec __user *rmtp);
 
 	void (*check_preempt_curr) (struct rq *rq, struct task_struct *p, int flags);
 

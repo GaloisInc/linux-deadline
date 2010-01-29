@@ -343,3 +343,4 @@ ENTRY(sys_call_table)
 	.long sys_sched_setscheduler_ex
 	.long sys_sched_setparam_ex
 	.long sys_sched_getparam_ex
+	.long sys_sched_wait_interval

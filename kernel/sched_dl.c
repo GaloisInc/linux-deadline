@@ -724,6 +724,68 @@ static void dequeue_task_dl(struct rq *rq, struct task_struct *p, int flags)
 }
 
 /*
+ * This function makes the task sleep until at least the absolute time
+ * instant specified in @rqtp.
+ * In fact, since we want to wake up the task with its full runtime,
+ * @rqtp might be too early (or the task might already have overrun
+ * its runtime when calling this), the sleeping time may  be longer
+ * than asked.
+ *
+ * This is intended to be used at the end of a periodic -deadline task
+ * instance, or any time a task want to be sure it'll wake up with
+ * its full runtime.
+ */
+static long wait_interval_dl(struct task_struct *p, struct timespec *rqtp,
+			     struct timespec *rmtp)
+{
+	unsigned long flags;
+	struct sched_dl_entity *dl_se = &p->dl;
+	struct rq *rq = task_rq_lock(p, &flags);
+	struct timespec lrqtp;
+	u64 wakeup;
+
+	/*
+	 * If no wakeup time is provided, sleep at least up to the
+	 * next activation period. This guarantee the budget will
+	 * be renewed.
+	 */
+	if (!rqtp) {
+		wakeup = dl_se->deadline +
+			 dl_se->dl_period - dl_se->dl_deadline;
+		goto unlock;
+	}
+
+	/*
+	 * If the tasks wants to wake up _before_ its absolute deadline
+	 * we must be sure that reusing its (actual) runtime and deadline
+	 * at that time _would_ overcome its bandwidth limitation, so
+	 * that we know it will be given new parameters.
+	 *
+	 * If this is not true, we postpone the wake-up time up to the right
+	 * instant. This involves a division (to calculate the reverse of the
+	 * task's bandwidth), but it is worth to notice that it is quite
+	 * unlikely that we get into here very often.
+	 */
+	wakeup = timespec_to_ns(rqtp);
+	if (dl_time_before(wakeup, dl_se->deadline) &&
+	    !dl_entity_overflow(dl_se, wakeup)) {
+		u64 ibw = (u64)dl_se->runtime * dl_se->dl_period;
+
+		ibw = div_u64(ibw, dl_se->dl_runtime);
+		wakeup = dl_se->deadline - ibw;
+	}
+
+unlock:
+	task_rq_unlock(rq, &flags);
+
+	lrqtp = ns_to_timespec(wakeup);
+	dl_se->dl_new = 1;
+
+	return hrtimer_nanosleep(&lrqtp, rmtp, HRTIMER_MODE_ABS,
+				 CLOCK_MONOTONIC);
+}
+
+/*
  * Yield task semantic for -deadline tasks is:
  *
  *   get off from the CPU until our next instance, with
@@ -1483,6 +1545,7 @@ static const struct sched_class dl_sched_class = {
 	.enqueue_task		= enqueue_task_dl,
 	.dequeue_task		= dequeue_task_dl,
 	.yield_task		= yield_task_dl,
+	.wait_interval		= wait_interval_dl,
 
 	.check_preempt_curr	= check_preempt_curr_dl,
 

@@ -854,4 +854,5 @@ ia32_sys_call_table:
 	.quad sys_sched_setscheduler_ex
 	.quad sys_sched_setparam_ex
 	.quad sys_sched_getparam_ex
+	.quad sys_sched_wait_interval
 ia32_syscall_end:
