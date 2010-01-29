@@ -1578,6 +1578,27 @@ static int dso__load_vmlinux(struct dso *self, struct map *map,
 	return err;
 }
 
+int dso__load_vmlinux_path(struct dso *self, struct map *map,
+			   struct perf_session *session, symbol_filter_t filter)
+{
+	int i, err = 0;
+
+	pr_debug("Looking at the vmlinux_path (%d entries long)\n",
+		 vmlinux_path__nr_entries);
+
+	for (i = 0; i < vmlinux_path__nr_entries; ++i) {
+		err = dso__load_vmlinux(self, map, session, vmlinux_path[i],
+					filter);
+		if (err > 0) {
+			pr_debug("Using %s for symbols\n", vmlinux_path[i]);
+			dso__set_long_name(self, strdup(vmlinux_path[i]));
+			break;
+		}
+	}
+
+	return err;
+}
+
 static int dso__load_kernel_sym(struct dso *self, struct map *map,
 				struct perf_session *session, symbol_filter_t filter)
 {
@@ -1606,20 +1627,9 @@ static int dso__load_kernel_sym(struct dso *self, struct map *map,
 	}
 
 	if (vmlinux_path != NULL) {
-		int i;
-		pr_debug("Looking at the vmlinux_path (%d entries long)\n",
-			 vmlinux_path__nr_entries);
-		for (i = 0; i < vmlinux_path__nr_entries; ++i) {
-			err = dso__load_vmlinux(self, map, session,
-						vmlinux_path[i], filter);
-			if (err > 0) {
-				pr_debug("Using %s for symbols\n",
-					 vmlinux_path[i]);
-				dso__set_long_name(self,
-						   strdup(vmlinux_path[i]));
-				goto out_fixup;
-			}
-		}
+		err = dso__load_vmlinux_path(self, map, session, filter);
+		if (err > 0)
+			goto out_fixup;
 	}
 
 	/*
@@ -1752,24 +1762,38 @@ size_t dsos__fprintf_buildid(FILE *fp, bool with_hits)
 		__dsos__fprintf_buildid(&dsos__user, fp, with_hits));
 }
 
+struct dso *dso__new_kernel(const char *name)
+{
+	struct dso *self = dso__new(name ?: "[kernel.kallsyms]");
+
+	if (self != NULL) {
+		self->short_name = "[kernel]";
+		self->kernel	 = 1;
+	}
+
+	return self;
+}
+
+void dso__read_running_kernel_build_id(struct dso *self)
+{
+	if (sysfs__read_build_id("/sys/kernel/notes", self->build_id,
+				 sizeof(self->build_id)) == 0)
+		self->has_build_id = true;
+}
+
 static struct dso *dsos__create_kernel(const char *vmlinux)
 {
-	struct dso *kernel = dso__new(vmlinux ?: "[kernel.kallsyms]");
+	struct dso *kernel = dso__new_kernel(vmlinux);
 
 	if (kernel == NULL)
 		return NULL;
-
-	kernel->short_name = "[kernel]";
-	kernel->kernel	   = 1;
 
 	vdso = dso__new("[vdso]");
 	if (vdso == NULL)
 		goto out_delete_kernel_dso;
 	dso__set_loaded(vdso, MAP__FUNCTION);
 
-	if (sysfs__read_build_id("/sys/kernel/notes", kernel->build_id,
-				 sizeof(kernel->build_id)) == 0)
-		kernel->has_build_id = true;
+	dso__read_running_kernel_build_id(kernel);
 
 	dsos__add(&dsos__kernel, kernel);
 	dsos__add(&dsos__user, vdso);
