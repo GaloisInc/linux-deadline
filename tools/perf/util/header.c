@@ -1,3 +1,5 @@
+#define _FILE_OFFSET_BITS 64
+
 #include <sys/types.h>
 #include <byteswap.h>
 #include <unistd.h>
@@ -202,8 +204,11 @@ static int __dsos__write_buildid_table(struct list_head *head, u16 misc, int fd)
 	dsos__for_each_with_build_id(pos, head) {
 		int err;
 		struct build_id_event b;
-		size_t len = pos->long_name_len + 1;
+		size_t len;
 
+		if (!pos->hit)
+			continue;
+		len = pos->long_name_len + 1;
 		len = ALIGN(len, NAME_ALIGN);
 		memset(&b, 0, sizeof(b));
 		memcpy(&b.build_id, pos->build_id, sizeof(pos->build_id));
@@ -368,7 +373,7 @@ static int perf_header__adds_write(struct perf_header *self, int fd)
 	u64 sec_start;
 	int idx = 0, err;
 
-	if (dsos__read_build_ids())
+	if (dsos__read_build_ids(true))
 		perf_header__set_feat(self, HEADER_BUILD_ID);
 
 	nr_sections = bitmap_weight(self->adds_features, HEADER_FEAT_BITS);
@@ -408,7 +413,8 @@ static int perf_header__adds_write(struct perf_header *self, int fd)
 			pr_debug("failed to write buildid table\n");
 			goto out_free;
 		}
-		buildid_sec->size = lseek(fd, 0, SEEK_CUR) - buildid_sec->offset;
+		buildid_sec->size = lseek(fd, 0, SEEK_CUR) -
+					  buildid_sec->offset;
 		dsos__cache_build_ids();
 	}
 
@@ -634,7 +640,7 @@ static int perf_file_section__process(struct perf_file_section *self,
 				      struct perf_header *ph,
 				      int feat, int fd)
 {
-	if (lseek(fd, self->offset, SEEK_SET) < 0) {
+	if (lseek(fd, self->offset, SEEK_SET) == (off_t)-1) {
 		pr_debug("Failed to lseek to %Ld offset for feature %d, "
 			 "continuing...\n", self->offset, feat);
 		return 0;

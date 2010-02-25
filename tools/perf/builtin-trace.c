@@ -44,6 +44,7 @@ static void setup_scripting(void)
 	perf_set_argv_exec_path(perf_exec_path());
 
 	setup_perl_scripting();
+	setup_python_scripting();
 
 	scripting_ops = &default_scripting_ops;
 }
@@ -219,9 +220,9 @@ static int parse_scriptname(const struct option *opt __used,
 	const char *script, *ext;
 	int len;
 
-	if (strcmp(str, "list") == 0) {
+	if (strcmp(str, "lang") == 0) {
 		list_available_languages();
-		return 0;
+		exit(0);
 	}
 
 	script = strchr(str, ':');

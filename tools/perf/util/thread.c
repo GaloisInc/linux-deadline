@@ -36,7 +36,10 @@ int thread__set_comm(struct thread *self, const char *comm)
 	if (self->comm)
 		free(self->comm);
 	self->comm = strdup(comm);
-	return self->comm ? 0 : -ENOMEM;
+	if (self->comm == NULL)
+		return -ENOMEM;
+	self->comm_set = true;
+	return 0;
 }
 
 int thread__comm_len(struct thread *self)
@@ -255,11 +258,14 @@ int thread__fork(struct thread *self, struct thread *parent)
 {
 	int i;
 
-	if (self->comm)
-		free(self->comm);
-	self->comm = strdup(parent->comm);
-	if (!self->comm)
-		return -ENOMEM;
+	if (parent->comm_set) {
+		if (self->comm)
+			free(self->comm);
+		self->comm = strdup(parent->comm);
+		if (!self->comm)
+			return -ENOMEM;
+		self->comm_set = true;
+	}
 
 	for (i = 0; i < MAP__NR_TYPES; ++i)
 		if (map_groups__clone(&self->mg, &parent->mg, i) < 0)
@@ -282,14 +288,13 @@ size_t perf_session__fprintf(struct perf_session *self, FILE *fp)
 }
 
 struct symbol *map_groups__find_symbol(struct map_groups *self,
-				       struct perf_session *session,
 				       enum map_type type, u64 addr,
 				       symbol_filter_t filter)
 {
 	struct map *map = map_groups__find(self, type, addr);
 
 	if (map != NULL)
-		return map__find_symbol(map, session, map->map_ip(map, addr), filter);
+		return map__find_symbol(map, map->map_ip(map, addr), filter);
 
 	return NULL;
 }
