@@ -436,7 +436,6 @@ struct rt_rq {
 	struct rq *rq;
 	struct list_head leaf_rt_rq_list;
 	struct task_group *tg;
-	struct sched_rt_entity *rt_se;
 #endif
 };
 
@@ -899,16 +898,33 @@ static inline void finish_lock_switch(struct rq *rq, struct task_struct *prev)
 #endif /* __ARCH_WANT_UNLOCKED_CTXSW */
 
 /*
+ * Check whether the task is waking, we use this to synchronize against
+ * ttwu() so that task_cpu() reports a stable number.
+ *
+ * We need to make an exception for PF_STARTING tasks because the fork
+ * path might require task_rq_lock() to work, eg. it can call
+ * set_cpus_allowed_ptr() from the cpuset clone_ns code.
+ */
+static inline int task_is_waking(struct task_struct *p)
+{
+	return unlikely((p->state == TASK_WAKING) && !(p->flags & PF_STARTING));
+}
+
+/*
  * __task_rq_lock - lock the runqueue a given task resides on.
  * Must be called interrupts disabled.
  */
 static inline struct rq *__task_rq_lock(struct task_struct *p)
 	__acquires(rq->lock)
 {
+	struct rq *rq;
+
 	for (;;) {
-		struct rq *rq = task_rq(p);
+		while (task_is_waking(p))
+			cpu_relax();
+		rq = task_rq(p);
 		raw_spin_lock(&rq->lock);
-		if (likely(rq == task_rq(p)))
+		if (likely(rq == task_rq(p) && !task_is_waking(p)))
 			return rq;
 		raw_spin_unlock(&rq->lock);
 	}
@@ -925,10 +941,12 @@ static struct rq *task_rq_lock(struct task_struct *p, unsigned long *flags)
 	struct rq *rq;
 
 	for (;;) {
+		while (task_is_waking(p))
+			cpu_relax();
 		local_irq_save(*flags);
 		rq = task_rq(p);
 		raw_spin_lock(&rq->lock);
-		if (likely(rq == task_rq(p)))
+		if (likely(rq == task_rq(p) && !task_is_waking(p)))
 			return rq;
 		raw_spin_unlock_irqrestore(&rq->lock, *flags);
 	}
@@ -1633,16 +1651,6 @@ static void update_shares(struct sched_domain *sd)
 	}
 }
 
-static void update_shares_locked(struct rq *rq, struct sched_domain *sd)
-{
-	if (root_task_group_empty())
-		return;
-
-	raw_spin_unlock(&rq->lock);
-	update_shares(sd);
-	raw_spin_lock(&rq->lock);
-}
-
 static void update_h_load(long cpu)
 {
 	if (root_task_group_empty())
@@ -1654,10 +1662,6 @@ static void update_h_load(long cpu)
 #else
 
 static inline void update_shares(struct sched_domain *sd)
-{
-}
-
-static inline void update_shares_locked(struct rq *rq, struct sched_domain *sd)
 {
 }
 
@@ -2389,14 +2393,27 @@ static int try_to_wake_up(struct task_struct *p, unsigned int state,
 	__task_rq_unlock(rq);
 
 	cpu = select_task_rq(p, SD_BALANCE_WAKE, wake_flags);
-	if (cpu != orig_cpu)
+	if (cpu != orig_cpu) {
+		/*
+		 * Since we migrate the task without holding any rq->lock,
+		 * we need to be careful with task_rq_lock(), since that
+		 * might end up locking an invalid rq.
+		 */
 		set_task_cpu(p, cpu);
+	}
 
-	rq = __task_rq_lock(p);
+	rq = cpu_rq(cpu);
+	raw_spin_lock(&rq->lock);
 	update_rq_clock(rq);
 
+	/*
+	 * We migrated the task without holding either rq->lock, however
+	 * since the task is not on the task list itself, nobody else
+	 * will try and migrate the task, hence the rq should match the
+	 * cpu we just moved it to.
+	 */
+	WARN_ON(task_cpu(p) != cpu);
 	WARN_ON(p->state != TASK_WAKING);
-	cpu = task_cpu(p);
 
 #ifdef CONFIG_SCHEDSTATS
 	schedstat_inc(rq, ttwu_count);
@@ -2644,7 +2661,13 @@ void wake_up_new_task(struct task_struct *p, unsigned long clone_flags)
 	set_task_cpu(p, cpu);
 #endif
 
-	rq = task_rq_lock(p, &flags);
+	/*
+	 * Since the task is not on the rq and we still have TASK_WAKING set
+	 * nobody else will migrate this task.
+	 */
+	rq = cpu_rq(cpu);
+	raw_spin_lock_irqsave(&rq->lock, flags);
+
 	BUG_ON(p->state != TASK_WAKING);
 	p->state = TASK_RUNNING;
 	update_rq_clock(rq);
@@ -4232,7 +4255,7 @@ void rt_mutex_setprio(struct task_struct *p, int prio)
 	unsigned long flags;
 	int oldprio, on_rq, running;
 	struct rq *rq;
-	const struct sched_class *prev_class = p->sched_class;
+	const struct sched_class *prev_class;
 
 	BUG_ON(prio < 0 || prio > MAX_PRIO);
 
@@ -4240,6 +4263,7 @@ void rt_mutex_setprio(struct task_struct *p, int prio)
 	update_rq_clock(rq);
 
 	oldprio = p->prio;
+	prev_class = p->sched_class;
 	on_rq = p->se.on_rq;
 	running = task_current(rq, p);
 	if (on_rq)
@@ -4459,7 +4483,7 @@ static int __sched_setscheduler(struct task_struct *p, int policy,
 {
 	int retval, oldprio, oldpolicy = -1, on_rq, running;
 	unsigned long flags;
-	const struct sched_class *prev_class = p->sched_class;
+	const struct sched_class *prev_class;
 	struct rq *rq;
 	int reset_on_fork;
 
@@ -4573,6 +4597,7 @@ recheck:
 	p->sched_reset_on_fork = reset_on_fork;
 
 	oldprio = p->prio;
+	prev_class = p->sched_class;
 	__setscheduler(rq, p, policy, param->sched_priority);
 
 	if (running)
@@ -5323,26 +5348,7 @@ int set_cpus_allowed_ptr(struct task_struct *p, const struct cpumask *new_mask)
 	struct rq *rq;
 	int ret = 0;
 
-	/*
-	 * Since we rely on wake-ups to migrate sleeping tasks, don't change
-	 * the ->cpus_allowed mask from under waking tasks, which would be
-	 * possible when we change rq->lock in ttwu(), so synchronize against
-	 * TASK_WAKING to avoid that.
-	 *
-	 * Make an exception for freshly cloned tasks, since cpuset namespaces
-	 * might move the task about, we have to validate the target in
-	 * wake_up_new_task() anyway since the cpu might have gone away.
-	 */
-again:
-	while (p->state == TASK_WAKING && !(p->flags & PF_STARTING))
-		cpu_relax();
-
 	rq = task_rq_lock(p, &flags);
-
-	if (p->state == TASK_WAKING && !(p->flags & PF_STARTING)) {
-		task_rq_unlock(rq, &flags);
-		goto again;
-	}
 
 	if (!cpumask_intersects(new_mask, cpu_active_mask)) {
 		ret = -EINVAL;
@@ -7630,7 +7636,6 @@ static void init_tg_rt_entry(struct task_group *tg, struct rt_rq *rt_rq,
 	tg->rt_rq[cpu] = rt_rq;
 	init_rt_rq(rt_rq, rq);
 	rt_rq->tg = tg;
-	rt_rq->rt_se = rt_se;
 	rt_rq->rt_runtime = tg->rt_bandwidth.rt_runtime;
 	if (add)
 		list_add(&rt_rq->leaf_rt_rq_list, &rq->leaf_rt_rq_list);
@@ -9020,12 +9025,30 @@ static void cpuacct_charge(struct task_struct *tsk, u64 cputime)
 }
 
 /*
+ * When CONFIG_VIRT_CPU_ACCOUNTING is enabled one jiffy can be very large
+ * in cputime_t units. As a result, cpuacct_update_stats calls
+ * percpu_counter_add with values large enough to always overflow the
+ * per cpu batch limit causing bad SMP scalability.
+ *
+ * To fix this we scale percpu_counter_batch by cputime_one_jiffy so we
+ * batch the same amount of time with CONFIG_VIRT_CPU_ACCOUNTING disabled
+ * and enabled. We cap it at INT_MAX which is the largest allowed batch value.
+ */
+#ifdef CONFIG_SMP
+#define CPUACCT_BATCH	\
+	min_t(long, percpu_counter_batch * cputime_one_jiffy, INT_MAX)
+#else
+#define CPUACCT_BATCH	0
+#endif
+
+/*
  * Charge the system/user time to the task's accounting group.
  */
 static void cpuacct_update_stats(struct task_struct *tsk,
 		enum cpuacct_stat_index idx, cputime_t val)
 {
 	struct cpuacct *ca;
+	int batch = CPUACCT_BATCH;
 
 	if (unlikely(!cpuacct_subsys.active))
 		return;
@@ -9034,7 +9057,7 @@ static void cpuacct_update_stats(struct task_struct *tsk,
 	ca = task_ca(tsk);
 
 	do {
-		percpu_counter_add(&ca->cpustat[idx], val);
+		__percpu_counter_add(&ca->cpustat[idx], val, batch);
 		ca = ca->parent;
 	} while (ca);
 	rcu_read_unlock();
