@@ -188,6 +188,36 @@ static int __release_resource(struct resource *old)
 	return -EINVAL;
 }
 
+static void __release_child_resources(struct resource *r)
+{
+	struct resource *tmp, *p;
+	resource_size_t size;
+
+	p = r->child;
+	r->child = NULL;
+	while (p) {
+		tmp = p;
+		p = p->sibling;
+
+		tmp->parent = NULL;
+		tmp->sibling = NULL;
+		__release_child_resources(tmp);
+
+		printk(KERN_DEBUG "release child resource %pR\n", tmp);
+		/* need to restore size, and keep flags */
+		size = resource_size(tmp);
+		tmp->start = 0;
+		tmp->end = size - 1;
+	}
+}
+
+void release_child_resources(struct resource *r)
+{
+	write_lock(&resource_lock);
+	__release_child_resources(r);
+	write_unlock(&resource_lock);
+}
+
 /**
  * request_resource - request and reserve an I/O or memory resource
  * @root: root resource descriptor
@@ -316,8 +346,10 @@ int __weak page_is_ram(unsigned long pfn)
 static int find_resource(struct resource *root, struct resource *new,
 			 resource_size_t size, resource_size_t min,
 			 resource_size_t max, resource_size_t align,
-			 void (*alignf)(void *, struct resource *,
-					resource_size_t, resource_size_t),
+			 resource_size_t (*alignf)(void *,
+						   const struct resource *,
+						   resource_size_t,
+						   resource_size_t),
 			 void *alignf_data)
 {
 	struct resource *this = root->child;
@@ -343,7 +375,7 @@ static int find_resource(struct resource *root, struct resource *new,
 			tmp.end = max;
 		tmp.start = ALIGN(tmp.start, align);
 		if (alignf)
-			alignf(alignf_data, &tmp, size, align);
+			tmp.start = alignf(alignf_data, &tmp, size, align);
 		if (tmp.start < tmp.end && tmp.end - tmp.start >= size - 1) {
 			new->start = tmp.start;
 			new->end = tmp.start + size - 1;
@@ -371,8 +403,10 @@ static int find_resource(struct resource *root, struct resource *new,
 int allocate_resource(struct resource *root, struct resource *new,
 		      resource_size_t size, resource_size_t min,
 		      resource_size_t max, resource_size_t align,
-		      void (*alignf)(void *, struct resource *,
-				     resource_size_t, resource_size_t),
+		      resource_size_t (*alignf)(void *,
+						const struct resource *,
+						resource_size_t,
+						resource_size_t),
 		      void *alignf_data)
 {
 	int err;
