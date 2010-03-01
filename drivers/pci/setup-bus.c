@@ -101,9 +101,17 @@ static void __assign_resources_sorted(struct resource_list *head,
 	for (list = head->next; list;) {
 		res = list->res;
 		idx = res - &list->dev->resource[0];
+
 		if (pci_assign_resource(list->dev, idx)) {
-			if (fail_head && !pci_is_root_bus(list->dev->bus))
-				add_to_failed_list(fail_head, list->dev, res);
+			if (fail_head && !pci_is_root_bus(list->dev->bus)) {
+				/*
+				 * if the failed res is for ROM BAR, and it will
+				 * be enabled later, don't add it to the list
+				 */
+				if (!((idx == PCI_ROM_RESOURCE) &&
+				      (!(res->flags & IORESOURCE_ROM_ENABLE))))
+					add_to_failed_list(fail_head, list->dev, res);
+			}
 			res->start = 0;
 			res->end = 0;
 			res->flags = 0;
@@ -869,6 +877,7 @@ static int __init pci_get_max_depth(void)
  * second  and later try will clear small leaf bridge res
  * will stop till to the max  deepth if can not find good one
  */
+int pci_try_num = 1;
 void __init
 pci_assign_unassigned_resources(void)
 {
@@ -879,14 +888,17 @@ pci_assign_unassigned_resources(void)
 	unsigned long type_mask = IORESOURCE_IO | IORESOURCE_MEM |
 				  IORESOURCE_PREFETCH;
 	unsigned long failed_type;
-	int max_depth = pci_get_max_depth();
-	int pci_try_num;
 
 	head.next = NULL;
 
-	pci_try_num = max_depth + 1;
-	printk(KERN_DEBUG "PCI: max bus depth: %d pci_try_num: %d\n",
-		 max_depth, pci_try_num);
+	if (pci_try_num > 1) {
+		int max_depth = pci_get_max_depth();
+
+		if (max_depth + 1 > pci_try_num)
+			pci_try_num = max_depth + 1;
+		printk(KERN_DEBUG "PCI: max bus depth: %d pci_try_num: %d\n",
+			 max_depth, pci_try_num);
+	}
 
 again:
 	/* Depth first, calculate sizes and alignments of all
