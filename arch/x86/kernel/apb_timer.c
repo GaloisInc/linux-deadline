@@ -69,7 +69,7 @@ static void apbt_set_mode(enum clock_event_mode mode,
 static int apbt_next_event(unsigned long delta,
 			   struct clock_event_device *evt);
 static cycle_t apbt_read_clocksource(struct clocksource *cs);
-static void apbt_restart_clocksource(void);
+static void apbt_restart_clocksource(struct clocksource *cs);
 
 struct apbt_dev {
 	struct clock_event_device evt;
@@ -249,7 +249,7 @@ static irqreturn_t apbt_interrupt_handler(int irq, void *data)
 	return IRQ_HANDLED;
 }
 
-static void apbt_restart_clocksource(void)
+static void apbt_restart_clocksource(struct clocksource *cs)
 {
 	apbt_start_counter(phy_cs_timer_id);
 }
