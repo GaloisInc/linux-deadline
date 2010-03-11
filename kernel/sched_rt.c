@@ -613,7 +613,7 @@ static void update_curr_rt(struct rq *rq)
 	if (unlikely((s64)delta_exec < 0))
 		delta_exec = 0;
 
-	schedstat_set(curr->se.exec_max, max(curr->se.exec_max, delta_exec));
+	schedstat_set(curr->se.statistics.exec_max, max(curr->se.statistics.exec_max, delta_exec));
 
 	curr->se.sum_exec_runtime += delta_exec;
 	account_group_exec_runtime(curr, delta_exec);
@@ -1146,7 +1146,12 @@ static struct task_struct *pick_next_highest_task_rt(struct rq *rq, int cpu)
 		if (next && next->prio < idx)
 			continue;
 		list_for_each_entry(rt_se, array->queue + idx, run_list) {
-			struct task_struct *p = rt_task_of(rt_se);
+			struct task_struct *p;
+
+			if (!rt_entity_is_task(rt_se))
+				continue;
+
+			p = rt_task_of(rt_se);
 			if (pick_rt_task(rq, p, cpu)) {
 				next = p;
 				break;
