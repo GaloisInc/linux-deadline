@@ -271,8 +271,14 @@ extern cpumask_var_t nohz_cpu_mask;
 #if defined(CONFIG_SMP) && defined(CONFIG_NO_HZ)
 extern int select_nohz_load_balancer(int cpu);
 extern int get_nohz_load_balancer(void);
+extern int nohz_ratelimit(int cpu);
 #else
 static inline int select_nohz_load_balancer(int cpu)
+{
+	return 0;
+}
+
+static inline int nohz_ratelimit(int cpu)
 {
 	return 0;
 }
@@ -1120,13 +1126,7 @@ struct sched_entity {
 	u64			vruntime;
 	u64			prev_sum_exec_runtime;
 
-	u64			last_wakeup;
-	u64			avg_overlap;
-
 	u64			nr_migrations;
-
-	u64			start_runtime;
-	u64			avg_wakeup;
 
 #ifdef CONFIG_SCHEDSTATS
 	struct sched_statistics statistics;
