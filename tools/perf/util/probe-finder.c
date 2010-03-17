@@ -125,8 +125,7 @@ static void line_list__add_line(struct list_head *head, unsigned int line)
 	p = head;
 found:
 	pr_debug("line list: add a line %u\n", line);
-	ln = zalloc(sizeof(struct line_node));
-	DIE_IF(ln == NULL);
+	ln = xzalloc(sizeof(struct line_node));
 	ln->line = line;
 	INIT_LIST_HEAD(&ln->list);
 	list_add(&ln->list, p);
@@ -187,62 +186,6 @@ static const char *cu_find_realpath(Dwarf_Die *cu_die, const char *fname)
 	return src;
 }
 
-struct __addr_die_search_param {
-	Dwarf_Addr	addr;
-	Dwarf_Die	*die_mem;
-};
-
-static int __die_search_func_cb(Dwarf_Die *fn_die, void *data)
-{
-	struct __addr_die_search_param *ad = data;
-
-	if (dwarf_tag(fn_die) == DW_TAG_subprogram &&
-	    dwarf_haspc(fn_die, ad->addr)) {
-		memcpy(ad->die_mem, fn_die, sizeof(Dwarf_Die));
-		return DWARF_CB_ABORT;
-	}
-	return DWARF_CB_OK;
-}
-
-/* Search a real subprogram including this line, */
-static Dwarf_Die *die_get_real_subprogram(Dwarf_Die *cu_die, Dwarf_Addr addr,
-					  Dwarf_Die *die_mem)
-{
-	struct __addr_die_search_param ad;
-	ad.addr = addr;
-	ad.die_mem = die_mem;
-	/* dwarf_getscopes can't find subprogram. */
-	if (!dwarf_getfuncs(cu_die, __die_search_func_cb, &ad, 0))
-		return NULL;
-	else
-		return die_mem;
-}
-
-/* Similar to dwarf_getfuncs, but returns inlined_subroutine if exists. */
-static Dwarf_Die *die_get_inlinefunc(Dwarf_Die *sp_die, Dwarf_Addr addr,
-				     Dwarf_Die *die_mem)
-{
-	Dwarf_Die child_die;
-	int ret;
-
-	ret = dwarf_child(sp_die, die_mem);
-	if (ret != 0)
-		return NULL;
-
-	do {
-		if (dwarf_tag(die_mem) == DW_TAG_inlined_subroutine &&
-		    dwarf_haspc(die_mem, addr))
-			return die_mem;
-
-		if (die_get_inlinefunc(die_mem, addr, &child_die)) {
-			memcpy(die_mem, &child_die, sizeof(Dwarf_Die));
-			return die_mem;
-		}
-	} while (dwarf_siblingof(die_mem, die_mem) == 0);
-
-	return NULL;
-}
-
 /* Compare diename and tname */
 static bool die_compare_name(Dwarf_Die *dw_die, const char *tname)
 {
@@ -263,32 +206,153 @@ static Dwarf_Addr die_get_entrypc(Dwarf_Die *dw_die)
 	return epc;
 }
 
-/* Get a variable die */
-static Dwarf_Die *die_find_variable(Dwarf_Die *sp_die, const char *name,
-				    Dwarf_Die *die_mem)
+/* Get type die, but skip qualifiers and typedef */
+static Dwarf_Die *die_get_real_type(Dwarf_Die *vr_die, Dwarf_Die *die_mem)
+{
+	Dwarf_Attribute attr;
+	int tag;
+
+	do {
+		if (dwarf_attr(vr_die, DW_AT_type, &attr) == NULL ||
+		    dwarf_formref_die(&attr, die_mem) == NULL)
+			return NULL;
+
+		tag = dwarf_tag(die_mem);
+		vr_die = die_mem;
+	} while (tag == DW_TAG_const_type ||
+		 tag == DW_TAG_restrict_type ||
+		 tag == DW_TAG_volatile_type ||
+		 tag == DW_TAG_shared_type ||
+		 tag == DW_TAG_typedef);
+
+	return die_mem;
+}
+
+/* Return values for die_find callbacks */
+enum {
+	DIE_FIND_CB_FOUND = 0,		/* End of Search */
+	DIE_FIND_CB_CHILD = 1,		/* Search only children */
+	DIE_FIND_CB_SIBLING = 2,	/* Search only siblings */
+	DIE_FIND_CB_CONTINUE = 3,	/* Search children and siblings */
+};
+
+/* Search a child die */
+static Dwarf_Die *die_find_child(Dwarf_Die *rt_die,
+				 int (*callback)(Dwarf_Die *, void *),
+				 void *data, Dwarf_Die *die_mem)
 {
 	Dwarf_Die child_die;
-	int tag;
 	int ret;
 
-	ret = dwarf_child(sp_die, die_mem);
+	ret = dwarf_child(rt_die, die_mem);
 	if (ret != 0)
 		return NULL;
 
 	do {
-		tag = dwarf_tag(die_mem);
-		if ((tag == DW_TAG_formal_parameter ||
-		     tag == DW_TAG_variable) &&
-		    (die_compare_name(die_mem, name) == 0))
+		ret = callback(die_mem, data);
+		if (ret == DIE_FIND_CB_FOUND)
 			return die_mem;
 
-		if (die_find_variable(die_mem, name, &child_die)) {
+		if ((ret & DIE_FIND_CB_CHILD) &&
+		    die_find_child(die_mem, callback, data, &child_die)) {
 			memcpy(die_mem, &child_die, sizeof(Dwarf_Die));
 			return die_mem;
 		}
-	} while (dwarf_siblingof(die_mem, die_mem) == 0);
+	} while ((ret & DIE_FIND_CB_SIBLING) &&
+		 dwarf_siblingof(die_mem, die_mem) == 0);
 
 	return NULL;
+}
+
+struct __addr_die_search_param {
+	Dwarf_Addr	addr;
+	Dwarf_Die	*die_mem;
+};
+
+static int __die_search_func_cb(Dwarf_Die *fn_die, void *data)
+{
+	struct __addr_die_search_param *ad = data;
+
+	if (dwarf_tag(fn_die) == DW_TAG_subprogram &&
+	    dwarf_haspc(fn_die, ad->addr)) {
+		memcpy(ad->die_mem, fn_die, sizeof(Dwarf_Die));
+		return DWARF_CB_ABORT;
+	}
+	return DWARF_CB_OK;
+}
+
+/* Search a real subprogram including this line, */
+static Dwarf_Die *die_find_real_subprogram(Dwarf_Die *cu_die, Dwarf_Addr addr,
+					   Dwarf_Die *die_mem)
+{
+	struct __addr_die_search_param ad;
+	ad.addr = addr;
+	ad.die_mem = die_mem;
+	/* dwarf_getscopes can't find subprogram. */
+	if (!dwarf_getfuncs(cu_die, __die_search_func_cb, &ad, 0))
+		return NULL;
+	else
+		return die_mem;
+}
+
+/* die_find callback for inline function search */
+static int __die_find_inline_cb(Dwarf_Die *die_mem, void *data)
+{
+	Dwarf_Addr *addr = data;
+
+	if (dwarf_tag(die_mem) == DW_TAG_inlined_subroutine &&
+	    dwarf_haspc(die_mem, *addr))
+		return DIE_FIND_CB_FOUND;
+
+	return DIE_FIND_CB_CONTINUE;
+}
+
+/* Similar to dwarf_getfuncs, but returns inlined_subroutine if exists. */
+static Dwarf_Die *die_find_inlinefunc(Dwarf_Die *sp_die, Dwarf_Addr addr,
+				      Dwarf_Die *die_mem)
+{
+	return die_find_child(sp_die, __die_find_inline_cb, &addr, die_mem);
+}
+
+static int __die_find_variable_cb(Dwarf_Die *die_mem, void *data)
+{
+	const char *name = data;
+	int tag;
+
+	tag = dwarf_tag(die_mem);
+	if ((tag == DW_TAG_formal_parameter ||
+	     tag == DW_TAG_variable) &&
+	    (die_compare_name(die_mem, name) == 0))
+		return DIE_FIND_CB_FOUND;
+
+	return DIE_FIND_CB_CONTINUE;
+}
+
+/* Find a variable called 'name' */
+static Dwarf_Die *die_find_variable(Dwarf_Die *sp_die, const char *name,
+				    Dwarf_Die *die_mem)
+{
+	return die_find_child(sp_die, __die_find_variable_cb, (void *)name,
+			      die_mem);
+}
+
+static int __die_find_member_cb(Dwarf_Die *die_mem, void *data)
+{
+	const char *name = data;
+
+	if ((dwarf_tag(die_mem) == DW_TAG_member) &&
+	    (die_compare_name(die_mem, name) == 0))
+		return DIE_FIND_CB_FOUND;
+
+	return DIE_FIND_CB_SIBLING;
+}
+
+/* Find a member called 'name' */
+static Dwarf_Die *die_find_member(Dwarf_Die *st_die, const char *name,
+				  Dwarf_Die *die_mem)
+{
+	return die_find_child(st_die, __die_find_member_cb, (void *)name,
+			      die_mem);
 }
 
 /*
@@ -296,19 +360,20 @@ static Dwarf_Die *die_find_variable(Dwarf_Die *sp_die, const char *name,
  */
 
 /* Show a location */
-static void show_location(Dwarf_Op *op, struct probe_finder *pf)
+static void convert_location(Dwarf_Op *op, struct probe_finder *pf)
 {
 	unsigned int regn;
 	Dwarf_Word offs = 0;
-	int deref = 0, ret;
+	bool ref = false;
 	const char *regs;
+	struct kprobe_trace_arg *tvar = pf->tvar;
 
 	/* TODO: support CFA */
 	/* If this is based on frame buffer, set the offset */
 	if (op->atom == DW_OP_fbreg) {
 		if (pf->fb_ops == NULL)
 			die("The attribute of frame base is not supported.\n");
-		deref = 1;
+		ref = true;
 		offs = op->number;
 		op = &pf->fb_ops[0];
 	}
@@ -316,13 +381,13 @@ static void show_location(Dwarf_Op *op, struct probe_finder *pf)
 	if (op->atom >= DW_OP_breg0 && op->atom <= DW_OP_breg31) {
 		regn = op->atom - DW_OP_breg0;
 		offs += op->number;
-		deref = 1;
+		ref = true;
 	} else if (op->atom >= DW_OP_reg0 && op->atom <= DW_OP_reg31) {
 		regn = op->atom - DW_OP_reg0;
 	} else if (op->atom == DW_OP_bregx) {
 		regn = op->number;
 		offs += op->number2;
-		deref = 1;
+		ref = true;
 	} else if (op->atom == DW_OP_regx) {
 		regn = op->number;
 	} else
@@ -332,17 +397,71 @@ static void show_location(Dwarf_Op *op, struct probe_finder *pf)
 	if (!regs)
 		die("%u exceeds max register number.", regn);
 
-	if (deref)
-		ret = snprintf(pf->buf, pf->len, " %s=%+jd(%s)",
-			       pf->var, (intmax_t)offs, regs);
-	else
-		ret = snprintf(pf->buf, pf->len, " %s=%s", pf->var, regs);
-	DIE_IF(ret < 0);
-	DIE_IF(ret >= pf->len);
+	tvar->value = xstrdup(regs);
+	if (ref) {
+		tvar->ref = xzalloc(sizeof(struct kprobe_trace_arg_ref));
+		tvar->ref->offset = (long)offs;
+	}
+}
+
+static void convert_variable_fields(Dwarf_Die *vr_die, const char *varname,
+				    struct perf_probe_arg_field *field,
+				    struct kprobe_trace_arg_ref **ref_ptr)
+{
+	struct kprobe_trace_arg_ref *ref = *ref_ptr;
+	Dwarf_Attribute attr;
+	Dwarf_Die member;
+	Dwarf_Die type;
+	Dwarf_Word offs;
+
+	pr_debug("converting %s in %s\n", field->name, varname);
+	if (die_get_real_type(vr_die, &type) == NULL)
+		die("Failed to get a type information of %s.", varname);
+
+	/* Check the pointer and dereference */
+	if (dwarf_tag(&type) == DW_TAG_pointer_type) {
+		if (!field->ref)
+			die("Semantic error: %s must be referred by '->'",
+			    field->name);
+		/* Get the type pointed by this pointer */
+		if (die_get_real_type(&type, &type) == NULL)
+			die("Failed to get a type information of %s.", varname);
+
+		ref = xzalloc(sizeof(struct kprobe_trace_arg_ref));
+		if (*ref_ptr)
+			(*ref_ptr)->next = ref;
+		else
+			*ref_ptr = ref;
+	} else {
+		if (field->ref)
+			die("Semantic error: %s must be referred by '.'",
+			    field->name);
+		if (!ref)
+			die("Structure on a register is not supported yet.");
+	}
+
+	/* Verify it is a data structure  */
+	if (dwarf_tag(&type) != DW_TAG_structure_type)
+		die("%s is not a data structure.", varname);
+
+	if (die_find_member(&type, field->name, &member) == NULL)
+		die("%s(tyep:%s) has no member %s.", varname,
+		    dwarf_diename(&type), field->name);
+
+	/* Get the offset of the field */
+	if (dwarf_attr(&member, DW_AT_data_member_location, &attr) == NULL ||
+	    dwarf_formudata(&attr, &offs) != 0)
+		die("Failed to get the offset of %s.", field->name);
+	ref->offset += (long)offs;
+
+	/* Converting next field */
+	if (field->next)
+		convert_variable_fields(&member, field->name, field->next,
+					&ref);
 }
 
 /* Show a variables in kprobe event format */
-static void show_variable(Dwarf_Die *vr_die, struct probe_finder *pf)
+static void convert_variable(Dwarf_Die *vr_die, struct probe_finder *pf)
 {
 	Dwarf_Attribute attr;
 	Dwarf_Op *expr;
@@ -356,83 +475,77 @@ static void show_variable(Dwarf_Die *vr_die, struct probe_finder *pf)
 	if (ret <= 0 || nexpr == 0)
 		goto error;
 
-	show_location(expr, pf);
+	convert_location(expr, pf);
+
+	if (pf->pvar->field)
+		convert_variable_fields(vr_die, pf->pvar->name,
+					pf->pvar->field, &pf->tvar->ref);
 	/* *expr will be cached in libdw. Don't free it. */
 	return ;
 error:
 	/* TODO: Support const_value */
 	die("Failed to find the location of %s at this address.\n"
-	    " Perhaps, it has been optimized out.", pf->var);
+	    " Perhaps, it has been optimized out.", pf->pvar->name);
 }
 
 /* Find a variable in a subprogram die */
 static void find_variable(Dwarf_Die *sp_die, struct probe_finder *pf)
 {
-	int ret;
 	Dwarf_Die vr_die;
+	char buf[128];
 
 	/* TODO: Support struct members and arrays */
-	if (!is_c_varname(pf->var)) {
-		/* Output raw parameters */
-		ret = snprintf(pf->buf, pf->len, " %s", pf->var);
-		DIE_IF(ret < 0);
-		DIE_IF(ret >= pf->len);
-		return ;
+	if (!is_c_varname(pf->pvar->name)) {
+		/* Copy raw parameters */
+		pf->tvar->value = xstrdup(pf->pvar->name);
+	} else {
+		synthesize_perf_probe_arg(pf->pvar, buf, 128);
+		pf->tvar->name = xstrdup(buf);
+		pr_debug("Searching '%s' variable in context.\n",
+			 pf->pvar->name);
+		/* Search child die for local variables and parameters. */
+		if (!die_find_variable(sp_die, pf->pvar->name, &vr_die))
+			die("Failed to find '%s' in this function.",
+			    pf->pvar->name);
+		convert_variable(&vr_die, pf);
 	}
-
-	pr_debug("Searching '%s' variable in context.\n", pf->var);
-	/* Search child die for local variables and parameters. */
-	if (!die_find_variable(sp_die, pf->var, &vr_die))
-		die("Failed to find '%s' in this function.", pf->var);
-
-	show_variable(&vr_die, pf);
 }
 
 /* Show a probe point to output buffer */
-static void show_probe_point(Dwarf_Die *sp_die, struct probe_finder *pf)
+static void convert_probe_point(Dwarf_Die *sp_die, struct probe_finder *pf)
 {
-	struct probe_point *pp = pf->pp;
+	struct kprobe_trace_event *tev;
 	Dwarf_Addr eaddr;
 	Dwarf_Die die_mem;
 	const char *name;
-	char tmp[MAX_PROBE_BUFFER];
-	int ret, i, len;
+	int ret, i;
 	Dwarf_Attribute fb_attr;
 	size_t nops;
 
+	if (pf->ntevs == MAX_PROBES)
+		die("Too many( > %d) probe point found.\n", MAX_PROBES);
+	tev = &pf->tevs[pf->ntevs++];
+
 	/* If no real subprogram, find a real one */
 	if (!sp_die || dwarf_tag(sp_die) != DW_TAG_subprogram) {
-		sp_die = die_get_real_subprogram(&pf->cu_die,
+		sp_die = die_find_real_subprogram(&pf->cu_die,
 						 pf->addr, &die_mem);
 		if (!sp_die)
 			die("Probe point is not found in subprograms.");
 	}
 
-	/* Output name of probe point */
+	/* Copy the name of probe point */
 	name = dwarf_diename(sp_die);
 	if (name) {
 		dwarf_entrypc(sp_die, &eaddr);
-		ret = snprintf(tmp, MAX_PROBE_BUFFER, "%s+%lu", name,
-				(unsigned long)(pf->addr - eaddr));
-		/* Copy the function name if possible */
-		if (!pp->function) {
-			pp->function = strdup(name);
-			pp->offset = (size_t)(pf->addr - eaddr);
-		}
-	} else {
+		tev->point.symbol = xstrdup(name);
+		tev->point.offset = (unsigned long)(pf->addr - eaddr);
+	} else
 		/* This function has no name. */
-		ret = snprintf(tmp, MAX_PROBE_BUFFER, "0x%jx",
-			       (uintmax_t)pf->addr);
-		if (!pp->function) {
-			/* TODO: Use _stext */
-			pp->function = strdup("");
-			pp->offset = (size_t)pf->addr;
-		}
-	}
-	DIE_IF(ret < 0);
-	DIE_IF(ret >= MAX_PROBE_BUFFER);
-	len = ret;
-	pr_debug("Probe point found: %s\n", tmp);
+		tev->point.offset = (unsigned long)pf->addr;
+
+	pr_debug("Probe point found: %s+%lu\n", tev->point.symbol,
+		 tev->point.offset);
 
 	/* Get the frame base attribute/ops */
 	dwarf_attr(sp_die, DW_AT_frame_base, &fb_attr);
@@ -442,22 +555,16 @@ static void show_probe_point(Dwarf_Die *sp_die, struct probe_finder *pf)
 
 	/* Find each argument */
 	/* TODO: use dwarf_cfi_addrframe */
-	for (i = 0; i < pp->nr_args; i++) {
-		pf->var = pp->args[i];
-		pf->buf = &tmp[len];
-		pf->len = MAX_PROBE_BUFFER - len;
+	tev->nargs = pf->pev->nargs;
+	tev->args = xzalloc(sizeof(struct kprobe_trace_arg) * tev->nargs);
+	for (i = 0; i < pf->pev->nargs; i++) {
+		pf->pvar = &pf->pev->args[i];
+		pf->tvar = &tev->args[i];
 		find_variable(sp_die, pf);
-		len += strlen(pf->buf);
 	}
 
 	/* *pf->fb_ops will be cached in libdw. Don't free it. */
 	pf->fb_ops = NULL;
-
-	if (pp->found == MAX_PROBES)
-		die("Too many( > %d) probe point found.\n", MAX_PROBES);
-
-	pp->probes[pp->found] = strdup(tmp);
-	pp->found++;
 }
 
 /* Find probe point from its line number */
@@ -489,7 +596,7 @@ static void find_probe_point_by_line(struct probe_finder *pf)
 			 (int)i, lineno, (uintmax_t)addr);
 		pf->addr = addr;
 
-		show_probe_point(NULL, pf);
+		convert_probe_point(NULL, pf);
 		/* Continuing, because target line might be inlined. */
 	}
 }
@@ -506,8 +613,7 @@ static int find_lazy_match_lines(struct list_head *head,
 	if (fd < 0)
 		die("failed to open %s", fname);
 	DIE_IF(fstat(fd, &st) < 0);
-	fbuf = malloc(st.st_size + 2);
-	DIE_IF(fbuf == NULL);
+	fbuf = xmalloc(st.st_size + 2);
 	DIE_IF(read(fd, fbuf, st.st_size) < 0);
 	close(fd);
 	fbuf[st.st_size] = '\n';	/* Dummy line */
@@ -541,7 +647,7 @@ static void find_probe_point_lazy(Dwarf_Die *sp_die, struct probe_finder *pf)
 	if (list_empty(&pf->lcache)) {
 		/* Matching lazy line pattern */
 		ret = find_lazy_match_lines(&pf->lcache, pf->fname,
-					    pf->pp->lazy_line);
+					    pf->pev->point.lazy_line);
 		if (ret <= 0)
 			die("No matched lines found in %s.", pf->fname);
 	}
@@ -566,7 +672,7 @@ static void find_probe_point_lazy(Dwarf_Die *sp_die, struct probe_finder *pf)
 			if (!dwarf_haspc(sp_die, addr))
 				continue;
 			/* Address filtering 2: No child include addr? */
-			if (die_get_inlinefunc(sp_die, addr, &die_mem))
+			if (die_find_inlinefunc(sp_die, addr, &die_mem))
 				continue;
 		}
 
@@ -574,7 +680,7 @@ static void find_probe_point_lazy(Dwarf_Die *sp_die, struct probe_finder *pf)
 			 (int)i, lineno, (unsigned long long)addr);
 		pf->addr = addr;
 
-		show_probe_point(sp_die, pf);
+		convert_probe_point(sp_die, pf);
 		/* Continuing, because target line might be inlined. */
 	}
 	/* TODO: deallocate lines, but how? */
@@ -583,7 +689,7 @@ static void find_probe_point_lazy(Dwarf_Die *sp_die, struct probe_finder *pf)
 static int probe_point_inline_cb(Dwarf_Die *in_die, void *data)
 {
 	struct probe_finder *pf = (struct probe_finder *)data;
-	struct probe_point *pp = pf->pp;
+	struct perf_probe_point *pp = &pf->pev->point;
 
 	if (pp->lazy_line)
 		find_probe_point_lazy(in_die, pf);
@@ -594,7 +700,7 @@ static int probe_point_inline_cb(Dwarf_Die *in_die, void *data)
 		pr_debug("found inline addr: 0x%jx\n",
 			 (uintmax_t)pf->addr);
 
-		show_probe_point(in_die, pf);
+		convert_probe_point(in_die, pf);
 	}
 
 	return DWARF_CB_OK;
@@ -604,7 +710,7 @@ static int probe_point_inline_cb(Dwarf_Die *in_die, void *data)
 static int probe_point_search_cb(Dwarf_Die *sp_die, void *data)
 {
 	struct probe_finder *pf = (struct probe_finder *)data;
-	struct probe_point *pp = pf->pp;
+	struct perf_probe_point *pp = &pf->pev->point;
 
 	/* Check tag and diename */
 	if (dwarf_tag(sp_die) != DW_TAG_subprogram ||
@@ -624,7 +730,7 @@ static int probe_point_search_cb(Dwarf_Die *sp_die, void *data)
 			pf->addr = die_get_entrypc(sp_die);
 			pf->addr += pp->offset;
 			/* TODO: Check the address in this function */
-			show_probe_point(sp_die, pf);
+			convert_probe_point(sp_die, pf);
 		}
 	} else
 		/* Inlined function: search instances */
@@ -638,20 +744,25 @@ static void find_probe_point_by_func(struct probe_finder *pf)
 	dwarf_getfuncs(&pf->cu_die, probe_point_search_cb, pf, 0);
 }
 
-/* Find a probe point */
-int find_probe_point(int fd, struct probe_point *pp)
+/* Find kprobe_trace_events specified by perf_probe_event from debuginfo */
+int find_kprobe_trace_events(int fd, struct perf_probe_event *pev,
+			     struct kprobe_trace_event **tevs)
 {
-	struct probe_finder pf = {.pp = pp};
+	struct probe_finder pf = {.pev = pev};
+	struct perf_probe_point *pp = &pev->point;
 	Dwarf_Off off, noff;
 	size_t cuhl;
 	Dwarf_Die *diep;
 	Dwarf *dbg;
 
+	pf.tevs = xzalloc(sizeof(struct kprobe_trace_event) * MAX_PROBES);
+	*tevs = pf.tevs;
+	pf.ntevs = 0;
+
 	dbg = dwarf_begin(fd, DWARF_C_READ);
 	if (!dbg)
 		return -ENOENT;
 
-	pp->found = 0;
 	off = 0;
 	line_list__init(&pf.lcache);
 	/* Loop on CUs (Compilation Unit) */
@@ -682,8 +793,78 @@ int find_probe_point(int fd, struct probe_point *pp)
 	line_list__free(&pf.lcache);
 	dwarf_end(dbg);
 
-	return pp->found;
+	return pf.ntevs;
 }
+
+/* Reverse search */
+int find_perf_probe_point(int fd, unsigned long addr,
+			  struct perf_probe_point *ppt)
+{
+	Dwarf_Die cudie, spdie, indie;
+	Dwarf *dbg;
+	Dwarf_Line *line;
+	Dwarf_Addr laddr, eaddr;
+	const char *tmp;
+	int lineno, ret = 0;
+
+	dbg = dwarf_begin(fd, DWARF_C_READ);
+	if (!dbg)
+		return -ENOENT;
+
+	/* Find cu die */
+	if (!dwarf_addrdie(dbg, (Dwarf_Addr)addr, &cudie))
+		return -EINVAL;
+
+	/* Find a corresponding line */
+	line = dwarf_getsrc_die(&cudie, (Dwarf_Addr)addr);
+	if (line) {
+		dwarf_lineaddr(line, &laddr);
+		if ((Dwarf_Addr)addr == laddr) {
+			dwarf_lineno(line, &lineno);
+			ppt->line = lineno;
+
+			tmp = dwarf_linesrc(line, NULL, NULL);
+			DIE_IF(!tmp);
+			ppt->file = xstrdup(tmp);
+			ret = 1;
+		}
+	}
+
+	/* Find a corresponding function */
+	if (die_find_real_subprogram(&cudie, (Dwarf_Addr)addr, &spdie)) {
+		tmp = dwarf_diename(&spdie);
+		if (!tmp)
+			goto end;
+
+		dwarf_entrypc(&spdie, &eaddr);
+		if (!lineno) {
+			/* We don't have a line number, let's use offset */
+			ppt->function = xstrdup(tmp);
+			ppt->offset = addr - (unsigned long)eaddr;
+			ret = 1;
+			goto end;
+		}
+		if (die_find_inlinefunc(&spdie, (Dwarf_Addr)addr, &indie)) {
+			/* addr in an inline function */
+			tmp = dwarf_diename(&indie);
+			if (!tmp)
+				goto end;
+			dwarf_decl_line(&indie, &lineno);
+		} else {
+			if (eaddr == addr)	/* No offset: function entry */
+				lineno = ppt->line;
+			else
+				dwarf_decl_line(&spdie, &lineno);
+		}
+		ppt->function = xstrdup(tmp);
+		ppt->line -= lineno;	/* Make a relative line number */
+	}
+
+end:
+	dwarf_end(dbg);
+	return ret;
+}
+
 
 /* Find line range from its line number */
 static void find_line_range_by_line(Dwarf_Die *sp_die, struct line_finder *lf)
@@ -716,7 +897,7 @@ static void find_line_range_by_line(Dwarf_Die *sp_die, struct line_finder *lf)
 				continue;
 
 			/* Address filtering 2: No child include addr? */
-			if (die_get_inlinefunc(sp_die, addr, &die_mem))
+			if (die_find_inlinefunc(sp_die, addr, &die_mem))
 				continue;
 		}
 
@@ -727,7 +908,7 @@ static void find_line_range_by_line(Dwarf_Die *sp_die, struct line_finder *lf)
 
 		/* Copy real path */
 		if (!lf->lr->path)
-			lf->lr->path = strdup(src);
+			lf->lr->path = xstrdup(src);
 		line_list__add_line(&lf->lr->line_list, (unsigned int)lineno);
 	}
 	/* Update status */
