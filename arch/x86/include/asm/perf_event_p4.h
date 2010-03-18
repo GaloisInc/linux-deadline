@@ -65,6 +65,7 @@
 #define P4_CCCR_THREAD_SINGLE		0x00010000U
 #define P4_CCCR_THREAD_BOTH		0x00020000U
 #define P4_CCCR_THREAD_ANY		0x00030000U
+#define P4_CCCR_RESERVED		0x00000fffU
 
 /* Non HT mask */
 #define P4_CCCR_MASK				\
@@ -116,7 +117,7 @@
 #define p4_config_pack_escr(v)		(((u64)(v)) << 32)
 #define p4_config_pack_cccr(v)		(((u64)(v)) & 0xffffffffULL)
 #define p4_config_unpack_escr(v)	(((u64)(v)) >> 32)
-#define p4_config_unpack_cccr(v)	(((u64)(v)) & 0xffffffffULL)
+#define p4_config_unpack_cccr(v)	(((u64)(v)) & 0xfffff000ULL)
 
 #define p4_config_unpack_emask(v)			\
 	({						\
@@ -125,6 +126,8 @@
 		t >>= P4_EVNTSEL_EVENTMASK_SHIFT;	\
 		t;					\
 	})
+
+#define p4_config_unpack_key(v)		(((u64)(v)) & P4_CCCR_RESERVED)
 
 #define P4_CONFIG_HT_SHIFT		63
 #define P4_CONFIG_HT			(1ULL << P4_CONFIG_HT_SHIFT)
@@ -703,6 +706,16 @@ enum P4_EVENTS_ATTR {
 
 	P4_MAKE_EVENT_ATTR(P4_INSTR_COMPLETED, NBOGUS, 0),
 	P4_MAKE_EVENT_ATTR(P4_INSTR_COMPLETED, BOGUS, 1),
+};
+
+enum {
+	KEY_P4_L1D_OP_READ_RESULT_MISS,
+	KEY_P4_LL_OP_READ_RESULT_MISS,
+	KEY_P4_DTLB_OP_READ_RESULT_MISS,
+	KEY_P4_DTLB_OP_WRITE_RESULT_MISS,
+	KEY_P4_ITLB_OP_READ_RESULT_ACCESS,
+	KEY_P4_ITLB_OP_READ_RESULT_MISS,
+	KEY_P4_UOP_TYPE,
 };
 
 #endif /* PERF_EVENT_P4_H */
