@@ -22,8 +22,10 @@ struct hist_entry *__perf_session__add_hist_entry(struct rb_root *hists,
 	struct hist_entry *he;
 	struct hist_entry entry = {
 		.thread	= al->thread,
-		.map	= al->map,
-		.sym	= al->sym,
+		.ms = {
+			.map	= al->map,
+			.sym	= al->sym,
+		},
 		.ip	= al->addr,
 		.level	= al->level,
 		.count	= count,
@@ -258,8 +260,8 @@ static size_t ipchain__fprintf_graph(FILE *fp, struct callchain_list *chain,
 		} else
 			ret += fprintf(fp, "%s", "          ");
 	}
-	if (chain->sym)
-		ret += fprintf(fp, "%s\n", chain->sym->name);
+	if (chain->ms.sym)
+		ret += fprintf(fp, "%s\n", chain->ms.sym->name);
 	else
 		ret += fprintf(fp, "%p\n", (void *)(long)chain->ip);
 
@@ -278,7 +280,7 @@ static void init_rem_hits(void)
 	}
 
 	strcpy(rem_sq_bracket->name, "[...]");
-	rem_hits.sym = rem_sq_bracket;
+	rem_hits.ms.sym = rem_sq_bracket;
 }
 
 static size_t __callchain__fprintf_graph(FILE *fp, struct callchain_node *self,
@@ -380,8 +382,8 @@ static size_t callchain__fprintf_graph(FILE *fp, struct callchain_node *self,
 		} else
 			ret += callchain__fprintf_left_margin(fp, left_margin);
 
-		if (chain->sym)
-			ret += fprintf(fp, " %s\n", chain->sym->name);
+		if (chain->ms.sym)
+			ret += fprintf(fp, " %s\n", chain->ms.sym->name);
 		else
 			ret += fprintf(fp, " %p\n", (void *)(long)chain->ip);
 	}
@@ -406,8 +408,8 @@ static size_t callchain__fprintf_flat(FILE *fp, struct callchain_node *self,
 	list_for_each_entry(chain, &self->val, list) {
 		if (chain->ip >= PERF_CONTEXT_MAX)
 			continue;
-		if (chain->sym)
-			ret += fprintf(fp, "                %s\n", chain->sym->name);
+		if (chain->ms.sym)
+			ret += fprintf(fp, "                %s\n", chain->ms.sym->name);
 		else
 			ret += fprintf(fp, "                %p\n",
 					(void *)(long)chain->ip);
@@ -654,7 +656,7 @@ print_entries:
 		if (symbol_conf.use_callchain)
 			ret += hist_entry__fprintf_callchain(h, fp, session_total);
 
-		if (h->map == NULL && verbose > 1) {
+		if (h->ms.map == NULL && verbose > 1) {
 			__map_groups__fprintf_maps(&h->thread->mg,
 						   MAP__FUNCTION, fp);
 			fprintf(fp, "%.10s end\n", graph_dotted_line);
