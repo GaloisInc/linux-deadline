@@ -183,6 +183,8 @@ static const char *cu_find_realpath(Dwarf_Die *cu_die, const char *fname)
 		if (strtailcmp(src, fname) == 0)
 			break;
 	}
+	if (i == nfiles)
+		return NULL;
 	return src;
 }
 
@@ -427,22 +429,26 @@ static void convert_variable_fields(Dwarf_Die *vr_die, const char *varname,
 		if (die_get_real_type(&type, &type) == NULL)
 			die("Failed to get a type information of %s.", varname);
 
+		/* Verify it is a data structure  */
+		if (dwarf_tag(&type) != DW_TAG_structure_type)
+			die("%s is not a data structure.", varname);
+
 		ref = xzalloc(sizeof(struct kprobe_trace_arg_ref));
 		if (*ref_ptr)
 			(*ref_ptr)->next = ref;
 		else
 			*ref_ptr = ref;
 	} else {
+		/* Verify it is a data structure  */
+		if (dwarf_tag(&type) != DW_TAG_structure_type)
+			die("%s is not a data structure.", varname);
+
 		if (field->ref)
 			die("Semantic error: %s must be referred by '.'",
 			    field->name);
 		if (!ref)
 			die("Structure on a register is not supported yet.");
 	}
-
-	/* Verify it is a data structure  */
-	if (dwarf_tag(&type) != DW_TAG_structure_type)
-		die("%s is not a data structure.", varname);
 
 	if (die_find_member(&type, field->name, &member) == NULL)
 		die("%s(tyep:%s) has no member %s.", varname,
@@ -812,8 +818,10 @@ int find_perf_probe_point(int fd, unsigned long addr,
 		return -ENOENT;
 
 	/* Find cu die */
-	if (!dwarf_addrdie(dbg, (Dwarf_Addr)addr, &cudie))
-		return -EINVAL;
+	if (!dwarf_addrdie(dbg, (Dwarf_Addr)addr, &cudie)) {
+		ret = -EINVAL;
+		goto end;
+	}
 
 	/* Find a corresponding line */
 	line = dwarf_getsrc_die(&cudie, (Dwarf_Addr)addr);
