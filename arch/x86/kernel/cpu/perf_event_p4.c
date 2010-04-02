@@ -287,7 +287,7 @@ static struct p4_event_bind p4_event_bind_map[] = {
 	p4_config_pack_cccr(cache_event					| \
 			    P4_CCCR_ESEL(P4_OPCODE_ESEL(P4_OPCODE(event))))
 
-static __initconst u64 p4_hw_cache_event_ids
+static __initconst const u64 p4_hw_cache_event_ids
 				[PERF_COUNT_HW_CACHE_MAX]
 				[PERF_COUNT_HW_CACHE_OP_MAX]
 				[PERF_COUNT_HW_CACHE_RESULT_MAX] =
@@ -419,20 +419,7 @@ static u64 p4_pmu_event_map(int hw_event)
 	return config;
 }
 
-/*
- * We don't control raw events so it's up to the caller
- * to pass sane values (and we don't count the thread number
- * on HT machine but allow HT-compatible specifics to be
- * passed on)
- */
-static u64 p4_pmu_raw_event(u64 hw_event)
-{
-	return hw_event &
-		(p4_config_pack_escr(P4_ESCR_MASK_HT) |
-		 p4_config_pack_cccr(P4_CCCR_MASK_HT));
-}
-
-static int p4_hw_config(struct perf_event_attr *attr, struct hw_perf_event *hwc)
+static int p4_hw_config(struct perf_event *event)
 {
 	int cpu = raw_smp_processor_id();
 	u32 escr, cccr;
@@ -444,11 +431,29 @@ static int p4_hw_config(struct perf_event_attr *attr, struct hw_perf_event *hwc)
 	 */
 
 	cccr = p4_default_cccr_conf(cpu);
-	escr = p4_default_escr_conf(cpu, attr->exclude_kernel, attr->exclude_user);
-	hwc->config = p4_config_pack_escr(escr) | p4_config_pack_cccr(cccr);
+	escr = p4_default_escr_conf(cpu, event->attr.exclude_kernel,
+					 event->attr.exclude_user);
+	event->hw.config = p4_config_pack_escr(escr) |
+			   p4_config_pack_cccr(cccr);
 
 	if (p4_ht_active() && p4_ht_thread(cpu))
-		hwc->config = p4_set_ht_bit(hwc->config);
+		event->hw.config = p4_set_ht_bit(event->hw.config);
+
+	if (event->attr.type != PERF_TYPE_RAW)
+		return 0;
+
+	/*
+	 * We don't control raw events so it's up to the caller
+	 * to pass sane values (and we don't count the thread number
+	 * on HT machine but allow HT-compatible specifics to be
+	 * passed on)
+	 *
+	 * XXX: HT wide things should check perf_paranoid_cpu() &&
+	 *      CAP_SYS_ADMIN
+	 */
+	event->hw.config |= event->attr.config &
+		(p4_config_pack_escr(P4_ESCR_MASK_HT) |
+		 p4_config_pack_cccr(P4_CCCR_MASK_HT));
 
 	return 0;
 }
@@ -483,7 +488,7 @@ static void p4_pmu_disable_all(void)
 	struct cpu_hw_events *cpuc = &__get_cpu_var(cpu_hw_events);
 	int idx;
 
-	for (idx = 0; idx < x86_pmu.num_events; idx++) {
+	for (idx = 0; idx < x86_pmu.num_counters; idx++) {
 		struct perf_event *event = cpuc->events[idx];
 		if (!test_bit(idx, cpuc->active_mask))
 			continue;
@@ -540,7 +545,7 @@ static void p4_pmu_enable_all(int added)
 	struct cpu_hw_events *cpuc = &__get_cpu_var(cpu_hw_events);
 	int idx;
 
-	for (idx = 0; idx < x86_pmu.num_events; idx++) {
+	for (idx = 0; idx < x86_pmu.num_counters; idx++) {
 		struct perf_event *event = cpuc->events[idx];
 		if (!test_bit(idx, cpuc->active_mask))
 			continue;
@@ -562,7 +567,7 @@ static int p4_pmu_handle_irq(struct pt_regs *regs)
 
 	cpuc = &__get_cpu_var(cpu_hw_events);
 
-	for (idx = 0; idx < x86_pmu.num_events; idx++) {
+	for (idx = 0; idx < x86_pmu.num_counters; idx++) {
 
 		if (!test_bit(idx, cpuc->active_mask))
 			continue;
@@ -579,7 +584,7 @@ static int p4_pmu_handle_irq(struct pt_regs *regs)
 		p4_pmu_clear_cccr_ovf(hwc);
 
 		val = x86_perf_event_update(event);
-		if (val & (1ULL << (x86_pmu.event_bits - 1)))
+		if (val & (1ULL << (x86_pmu.cntval_bits - 1)))
 			continue;
 
 		/*
@@ -775,7 +780,7 @@ done:
 	return num ? -ENOSPC : 0;
 }
 
-static __initconst struct x86_pmu p4_pmu = {
+static __initconst const struct x86_pmu p4_pmu = {
 	.name			= "Netburst P4/Xeon",
 	.handle_irq		= p4_pmu_handle_irq,
 	.disable_all		= p4_pmu_disable_all,
@@ -785,7 +790,6 @@ static __initconst struct x86_pmu p4_pmu = {
 	.eventsel		= MSR_P4_BPU_CCCR0,
 	.perfctr		= MSR_P4_BPU_PERFCTR0,
 	.event_map		= p4_pmu_event_map,
-	.raw_event		= p4_pmu_raw_event,
 	.max_events		= ARRAY_SIZE(p4_general_events),
 	.get_event_constraints	= x86_get_event_constraints,
 	/*
@@ -794,10 +798,10 @@ static __initconst struct x86_pmu p4_pmu = {
 	 * though leave it restricted at moment assuming
 	 * HT is on
 	 */
-	.num_events		= ARCH_P4_MAX_CCCR,
+	.num_counters		= ARCH_P4_MAX_CCCR,
 	.apic			= 1,
-	.event_bits		= 40,
-	.event_mask		= (1ULL << 40) - 1,
+	.cntval_bits		= 40,
+	.cntval_mask		= (1ULL << 40) - 1,
 	.max_period		= (1ULL << 39) - 1,
 	.hw_config		= p4_hw_config,
 	.schedule_events	= p4_pmu_schedule_events,
