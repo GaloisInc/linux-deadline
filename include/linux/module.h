@@ -368,7 +368,8 @@ struct module
 	void (*exit)(void);
 
 	struct module_ref {
-		int count;
+		unsigned int incs;
+		unsigned int decs;
 	} __percpu *refptr;
 #endif
 
@@ -463,7 +464,7 @@ static inline void __module_get(struct module *module)
 {
 	if (module) {
 		preempt_disable();
-		__this_cpu_inc(module->refptr->count);
+		__this_cpu_inc(module->refptr->incs);
 		trace_module_get(module, _THIS_IP_);
 		preempt_enable();
 	}
@@ -477,10 +478,9 @@ static inline int try_module_get(struct module *module)
 		preempt_disable();
 
 		if (likely(module_is_live(module))) {
-			__this_cpu_inc(module->refptr->count);
+			__this_cpu_inc(module->refptr->incs);
 			trace_module_get(module, _THIS_IP_);
-		}
-		else
+		} else
 			ret = 0;
 
 		preempt_enable();
