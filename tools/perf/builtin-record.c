@@ -35,6 +35,7 @@ static unsigned int		page_size;
 static unsigned int		mmap_pages			=    128;
 static int			freq				=   1000;
 static int			output;
+static int			pipe_output			=      0;
 static const char		*output_name			= "perf.data";
 static int			group				=      0;
 static unsigned int		realtime_prio			=      0;
@@ -101,6 +102,11 @@ static void mmap_write_tail(struct mmap_data *md, unsigned long tail)
 	 */
 	/* mb(); */
 	pc->data_tail = tail;
+}
+
+static void advance_output(size_t size)
+{
+	bytes_written += size;
 }
 
 static void write_output(void *buf, size_t size)
@@ -420,10 +426,19 @@ static int process_buildids(void)
 
 static void atexit_header(void)
 {
-	session->header.data_size += bytes_written;
+	if (!pipe_output) {
+		session->header.data_size += bytes_written;
 
-	process_buildids();
-	perf_header__write(&session->header, output, true);
+		process_buildids();
+		perf_header__write(&session->header, output, true);
+	} else {
+		int err;
+
+		err = event__synthesize_build_ids(process_synthesized_event,
+						  session);
+		if (err < 0)
+			pr_err("Couldn't synthesize build ids.\n");
+	}
 }
 
 static int __cmd_record(int argc, const char **argv)
@@ -449,7 +464,9 @@ static int __cmd_record(int argc, const char **argv)
 		exit(-1);
 	}
 
-	if (!stat(output_name, &st) && st.st_size) {
+	if (!strcmp(output_name, "-"))
+		pipe_output = 1;
+	else if (!stat(output_name, &st) && st.st_size) {
 		if (!force) {
 			if (!append_file) {
 				pr_err("Error, output file %s exists, use -A "
@@ -474,7 +491,10 @@ static int __cmd_record(int argc, const char **argv)
 	else
 		flags |= O_TRUNC;
 
-	output = open(output_name, flags, S_IRUSR|S_IWUSR);
+	if (pipe_output)
+		output = STDOUT_FILENO;
+	else
+		output = open(output_name, flags, S_IRUSR | S_IWUSR);
 	if (output < 0) {
 		perror("failed to create output file");
 		exit(-1);
@@ -487,7 +507,7 @@ static int __cmd_record(int argc, const char **argv)
 	}
 
 	if (!file_new) {
-		err = perf_header__read(&session->header, output);
+		err = perf_header__read(session, output);
 		if (err < 0)
 			return err;
 	}
@@ -513,6 +533,8 @@ static int __cmd_record(int argc, const char **argv)
 		}
 
 		if (!child_pid) {
+			if (pipe_output)
+				dup2(2, 1);
 			close(child_ready_pipe[0]);
 			close(go_pipe[1]);
 			fcntl(go_pipe[0], F_SETFD, FD_CLOEXEC);
@@ -564,13 +586,45 @@ static int __cmd_record(int argc, const char **argv)
 			open_counters(cpumap[i]);
 	}
 
-	if (file_new) {
+	if (pipe_output) {
+		err = perf_header__write_pipe(output);
+		if (err < 0)
+			return err;
+	} else if (file_new) {
 		err = perf_header__write(&session->header, output, false);
 		if (err < 0)
 			return err;
 	}
 
 	post_processing_offset = lseek(output, 0, SEEK_CUR);
+
+	if (pipe_output) {
+		err = event__synthesize_attrs(&session->header,
+					      process_synthesized_event,
+					      session);
+		if (err < 0) {
+			pr_err("Couldn't synthesize attrs.\n");
+			return err;
+		}
+
+		err = event__synthesize_event_types(process_synthesized_event,
+						    session);
+		if (err < 0) {
+			pr_err("Couldn't synthesize event_types.\n");
+			return err;
+		}
+
+		err = event__synthesize_tracing_data(output, attrs,
+						     nr_counters,
+						     process_synthesized_event,
+						     session);
+		if (err <= 0) {
+			pr_err("Couldn't record tracing data.\n");
+			return err;
+		}
+
+		advance_output(err);
+	}
 
 	err = event__synthesize_kernel_mmap(process_synthesized_event,
 					    session, "_text");
