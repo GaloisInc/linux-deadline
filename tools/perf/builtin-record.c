@@ -26,13 +26,20 @@
 #include <unistd.h>
 #include <sched.h>
 
+enum write_mode_t {
+	WRITE_FORCE,
+	WRITE_APPEND
+};
+
 static int			*fd[MAX_NR_CPUS][MAX_COUNTERS];
 
+static unsigned int		user_interval 			= UINT_MAX;
 static long			default_interval		=      0;
 
 static int			nr_cpus				=      0;
 static unsigned int		page_size;
 static unsigned int		mmap_pages			=    128;
+static unsigned int		user_freq 			= UINT_MAX;
 static int			freq				=   1000;
 static int			output;
 static int			pipe_output			=      0;
@@ -48,8 +55,7 @@ static pid_t			*all_tids			=      NULL;
 static int			thread_num			=      0;
 static pid_t			child_pid			=     -1;
 static bool			inherit				=   true;
-static bool			force				=  false;
-static bool			append_file			=  false;
+static enum write_mode_t	write_mode			= WRITE_FORCE;
 static bool			call_graph			=  false;
 static bool			inherit_stat			=  false;
 static bool			no_samples			=  false;
@@ -257,10 +263,19 @@ static void create_counter(int counter, int cpu)
 	if (nr_counters > 1)
 		attr->sample_type |= PERF_SAMPLE_ID;
 
-	if (freq) {
-		attr->sample_type	|= PERF_SAMPLE_PERIOD;
-		attr->freq		= 1;
-		attr->sample_freq	= freq;
+	/*
+	 * We default some events to a 1 default interval. But keep
+	 * it a weak assumption overridable by the user.
+	 */
+	if (!attr->sample_period || (user_freq != UINT_MAX &&
+				     user_interval != UINT_MAX)) {
+		if (freq) {
+			attr->sample_type	|= PERF_SAMPLE_PERIOD;
+			attr->freq		= 1;
+			attr->sample_freq	= freq;
+		} else {
+			attr->sample_period = default_interval;
+		}
 	}
 
 	if (no_samples)
@@ -467,26 +482,19 @@ static int __cmd_record(int argc, const char **argv)
 	if (!strcmp(output_name, "-"))
 		pipe_output = 1;
 	else if (!stat(output_name, &st) && st.st_size) {
-		if (!force) {
-			if (!append_file) {
-				pr_err("Error, output file %s exists, use -A "
-				       "to append or -f to overwrite.\n",
-				       output_name);
-				exit(-1);
-			}
-		} else {
+		if (write_mode == WRITE_FORCE) {
 			char oldname[PATH_MAX];
 			snprintf(oldname, sizeof(oldname), "%s.old",
 				 output_name);
 			unlink(oldname);
 			rename(output_name, oldname);
 		}
-	} else {
-		append_file = false;
+	} else if (write_mode == WRITE_APPEND) {
+		write_mode = WRITE_FORCE;
 	}
 
 	flags = O_CREAT|O_RDWR;
-	if (append_file)
+	if (write_mode == WRITE_APPEND)
 		file_new = 0;
 	else
 		flags |= O_TRUNC;
@@ -500,7 +508,8 @@ static int __cmd_record(int argc, const char **argv)
 		exit(-1);
 	}
 
-	session = perf_session__new(output_name, O_WRONLY, force);
+	session = perf_session__new(output_name, O_WRONLY,
+				    write_mode == WRITE_FORCE);
 	if (session == NULL) {
 		pr_err("Not enough memory for reading perf file header\n");
 		return -1;
@@ -721,6 +730,8 @@ static const char * const record_usage[] = {
 	NULL
 };
 
+static bool force, append_file;
+
 static const struct option options[] = {
 	OPT_CALLBACK('e', "event", NULL, "event",
 		     "event selector. use 'perf list' to list available events",
@@ -742,14 +753,14 @@ static const struct option options[] = {
 	OPT_INTEGER('C', "profile_cpu", &profile_cpu,
 			    "CPU to profile on"),
 	OPT_BOOLEAN('f', "force", &force,
-			"overwrite existing data file"),
-	OPT_LONG('c', "count", &default_interval,
+			"overwrite existing data file (deprecated)"),
+	OPT_LONG('c', "count", &user_interval,
 		    "event period to sample"),
 	OPT_STRING('o', "output", &output_name, "file",
 		    "output file name"),
 	OPT_BOOLEAN('i', "inherit", &inherit,
 		    "child tasks inherit counters"),
-	OPT_INTEGER('F', "freq", &freq,
+	OPT_INTEGER('F', "freq", &user_freq,
 		    "profile at this frequency"),
 	OPT_INTEGER('m', "mmap-pages", &mmap_pages,
 		    "number of mmap data pages"),
@@ -770,7 +781,6 @@ static const struct option options[] = {
 
 int cmd_record(int argc, const char **argv, const char *prefix __used)
 {
-	int counter;
 	int i,j;
 
 	argc = parse_options(argc, argv, options, record_usage,
@@ -778,6 +788,16 @@ int cmd_record(int argc, const char **argv, const char *prefix __used)
 	if (!argc && target_pid == -1 && target_tid == -1 &&
 		!system_wide && profile_cpu == -1)
 		usage_with_options(record_usage, options);
+
+	if (force && append_file) {
+		fprintf(stderr, "Can't overwrite and append at the same time."
+				" You need to choose between -f and -A");
+		usage_with_options(record_usage, options);
+	} else if (append_file) {
+		write_mode = WRITE_APPEND;
+	} else {
+		write_mode = WRITE_FORCE;
+	}
 
 	symbol__init();
 
@@ -818,6 +838,11 @@ int cmd_record(int argc, const char **argv, const char *prefix __used)
 	if (!event_array)
 		return -ENOMEM;
 
+	if (user_interval != UINT_MAX)
+		default_interval = user_interval;
+	if (user_freq != UINT_MAX)
+		freq = user_freq;
+
 	/*
 	 * User specified count overrides default frequency.
 	 */
@@ -828,13 +853,6 @@ int cmd_record(int argc, const char **argv, const char *prefix __used)
 	} else {
 		fprintf(stderr, "frequency and count are zero, aborting\n");
 		exit(EXIT_FAILURE);
-	}
-
-	for (counter = 0; counter < nr_counters; counter++) {
-		if (attrs[counter].sample_period)
-			continue;
-
-		attrs[counter].sample_period = default_interval;
 	}
 
 	return __cmd_record(argc, argv);
