@@ -13,6 +13,7 @@
 
 #include "gigaset.h"
 #include <linux/gigaset_dev.h>
+#include <linux/tty.h>
 #include <linux/tty_flip.h>
 
 /*** our ioctls ***/

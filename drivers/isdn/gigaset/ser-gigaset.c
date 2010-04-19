@@ -11,10 +11,13 @@
  */
 
 #include "gigaset.h"
+
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/platform_device.h>
+#include <linux/tty.h>
 #include <linux/completion.h>
+#include <linux/slab.h>
 
 /* Version Information */
 #define DRIVER_AUTHOR "Tilman Schmidt"
