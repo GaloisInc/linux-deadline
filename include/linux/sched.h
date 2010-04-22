@@ -1336,6 +1336,7 @@ struct task_struct {
 
 	struct list_head tasks;
 	struct plist_node pushable_tasks;
+	struct rb_node pushable_dl_tasks;
 
 	struct mm_struct *mm, *active_mm;
 #if defined(SPLIT_RSS_COUNTING)

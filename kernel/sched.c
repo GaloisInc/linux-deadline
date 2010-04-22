@@ -424,6 +424,35 @@ struct dl_rq {
 	struct rb_node *rb_leftmost;
 
 	unsigned long dl_nr_running;
+
+#ifdef CONFIG_SMP
+	/*
+	 * Deadline values of the currently executing and the
+	 * earliest ready task on this rq. Caching these facilitates
+	 * the decision wether or not a ready but not running task
+	 * should migrate somewhere else.
+	 */
+	struct {
+		u64 curr;
+		u64 next;
+	} earliest_dl;
+
+	unsigned long dl_nr_migratory;
+	unsigned long dl_nr_total;
+	int overloaded;
+
+	/*
+	 * Tasks on this rq that can be pushed away. They are kept in
+	 * an rb-tree, ordered by tasks' deadlines, with caching
+	 * of the leftmost (earliest deadline) element.
+	 */
+	struct rb_root pushable_dl_tasks_root;
+	struct rb_node *pushable_dl_tasks_leftmost;
+#endif
+
+#ifdef CONFIG_DEADLINE_GROUP_SCHED
+	struct rq *rq;
+#endif
 };
 
 #ifdef CONFIG_SMP
@@ -440,6 +469,13 @@ struct root_domain {
 	atomic_t refcount;
 	cpumask_var_t span;
 	cpumask_var_t online;
+
+	/*
+	 * The bit corresponding to a CPU gets set here if such CPU has more
+	 * than one runnable -deadline task (as it is below for RT tasks).
+	 */
+	cpumask_var_t dlo_mask;
+	atomic_t dlo_count;
 
 	/*
 	 * The "RT overload" flag: it gets set if a CPU has more than
@@ -2742,6 +2778,7 @@ void sched_fork(struct task_struct *p, int clone_flags)
 	/* Want to start with kernel preemption disabled. */
 	task_thread_info(p)->preempt_count = 1;
 #endif
+	RB_CLEAR_NODE(&p->pushable_dl_tasks);
 	plist_node_init(&p->pushable_tasks, MAX_PRIO);
 
 	put_cpu();
@@ -5804,6 +5841,7 @@ again:
 		p->sched_class->set_cpus_allowed(p, new_mask);
 	else {
 		cpumask_copy(&p->cpus_allowed, new_mask);
+		p->dl.nr_cpus_allowed = cpumask_weight(new_mask);
 		p->rt.nr_cpus_allowed = cpumask_weight(new_mask);
 	}
 
@@ -6551,6 +6589,7 @@ static void free_rootdomain(struct root_domain *rd)
 
 	cpupri_cleanup(&rd->cpupri);
 
+	free_cpumask_var(rd->dlo_mask);
 	free_cpumask_var(rd->rto_mask);
 	free_cpumask_var(rd->online);
 	free_cpumask_var(rd->span);
@@ -6602,8 +6641,10 @@ static int init_rootdomain(struct root_domain *rd)
 		goto out;
 	if (!alloc_cpumask_var(&rd->online, GFP_KERNEL))
 		goto free_span;
-	if (!alloc_cpumask_var(&rd->rto_mask, GFP_KERNEL))
+	if (!alloc_cpumask_var(&rd->dlo_mask, GFP_KERNEL))
 		goto free_online;
+	if (!alloc_cpumask_var(&rd->rto_mask, GFP_KERNEL))
+		goto free_dlo_mask;
 
 	if (cpupri_init(&rd->cpupri) != 0)
 		goto free_rto_mask;
@@ -6611,6 +6652,8 @@ static int init_rootdomain(struct root_domain *rd)
 
 free_rto_mask:
 	free_cpumask_var(rd->rto_mask);
+free_dlo_mask:
+	free_cpumask_var(rd->dlo_mask);
 free_online:
 	free_cpumask_var(rd->online);
 free_span:
@@ -8033,6 +8076,19 @@ static void init_rt_rq(struct rt_rq *rt_rq, struct rq *rq)
 static void init_dl_rq(struct dl_rq *dl_rq, struct rq *rq)
 {
 	dl_rq->rb_root = RB_ROOT;
+
+#ifdef CONFIG_SMP
+	/* zero means no -deadline tasks */
+	dl_rq->earliest_dl.curr = dl_rq->earliest_dl.next = 0;
+
+	dl_rq->dl_nr_migratory = 0;
+	dl_rq->overloaded = 0;
+	dl_rq->pushable_dl_tasks_root = RB_ROOT;
+#endif
+
+#ifdef CONFIG_DEADLINE_GROUP_SCHED
+	dl_rq->rq = rq;
+#endif
 }
 
 #ifdef CONFIG_FAIR_GROUP_SCHED
