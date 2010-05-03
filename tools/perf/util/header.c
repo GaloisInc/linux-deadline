@@ -713,10 +713,18 @@ static int __event_process_build_id(struct build_id_event *bev,
 
 	dso = __dsos__findnew(head, filename);
 	if (dso != NULL) {
+		char sbuild_id[BUILD_ID_SIZE * 2 + 1];
+
 		dso__set_build_id(dso, &bev->build_id);
-			if (filename[0] == '[')
-				dso->kernel = dso_type;
-		}
+
+		if (filename[0] == '[')
+			dso->kernel = dso_type;
+
+		build_id__sprintf(dso->build_id, sizeof(dso->build_id),
+				  sbuild_id);
+		pr_debug("build id event received for %s: %s\n",
+			 dso->long_name, sbuild_id);
+	}
 
 	err = 0;
 out:
@@ -767,7 +775,7 @@ static int perf_file_section__process(struct perf_file_section *self,
 
 	switch (feat) {
 	case HEADER_TRACE_INFO:
-		trace_report(fd);
+		trace_report(fd, false);
 		break;
 
 	case HEADER_BUILD_ID:
@@ -782,10 +790,14 @@ static int perf_file_section__process(struct perf_file_section *self,
 }
 
 static int perf_file_header__read_pipe(struct perf_pipe_file_header *self,
-				       struct perf_header *ph, int fd)
+				       struct perf_header *ph, int fd,
+				       bool repipe)
 {
 	if (do_read(fd, self, sizeof(*self)) <= 0 ||
 	    memcmp(&self->magic, __perf_magic, sizeof(self->magic)))
+		return -1;
+
+	if (repipe && do_write(STDOUT_FILENO, self, sizeof(*self)) < 0)
 		return -1;
 
 	if (self->size != sizeof(*self)) {
@@ -805,7 +817,8 @@ static int perf_header__read_pipe(struct perf_session *session, int fd)
 	struct perf_header *self = &session->header;
 	struct perf_pipe_file_header f_header;
 
-	if (perf_file_header__read_pipe(&f_header, self, fd) < 0) {
+	if (perf_file_header__read_pipe(&f_header, self, fd,
+					session->repipe) < 0) {
 		pr_debug("incompatible file format\n");
 		return -EINVAL;
 	}
@@ -1096,12 +1109,17 @@ int event__process_tracing_data(event_t *self,
 	lseek(session->fd, offset + sizeof(struct tracing_data_event),
 	      SEEK_SET);
 
-	size_read = trace_report(session->fd);
+	size_read = trace_report(session->fd, session->repipe);
 
 	padding = ALIGN(size_read, sizeof(u64)) - size_read;
 
 	if (read(session->fd, buf, padding) < 0)
 		die("reading input file");
+	if (session->repipe) {
+		int retw = write(STDOUT_FILENO, buf, padding);
+		if (retw <= 0 || retw != padding)
+			die("repiping tracing data padding");
+	}
 
 	if (size_read + padding != size)
 		die("tracing data size mismatch");
@@ -1110,7 +1128,8 @@ int event__process_tracing_data(event_t *self,
 }
 
 int event__synthesize_build_id(struct dso *pos, u16 misc,
-			       event__handler_t process, struct machine *machine,
+			       event__handler_t process,
+			       struct machine *machine,
 			       struct perf_session *session)
 {
 	event_t ev;
@@ -1134,67 +1153,6 @@ int event__synthesize_build_id(struct dso *pos, u16 misc,
 	err = process(&ev, session);
 
 	return err;
-}
-
-static int __event_synthesize_build_ids(struct list_head *head, u16 misc,
-					event__handler_t process,
-					struct machine *machine,
-					struct perf_session *session)
-{
-	struct dso *pos;
-
-	dsos__for_each_with_build_id(pos, head) {
-		int err;
-		if (!pos->hit)
-			continue;
-
-		err = event__synthesize_build_id(pos, misc, process,
-						 machine, session);
-		if (err < 0)
-			return err;
-	}
-
-	return 0;
-}
-
-int event__synthesize_build_ids(event__handler_t process,
-				struct perf_session *session)
-{
-	int err = 0;
-	u16 kmisc, umisc;
-	struct machine *pos;
-	struct rb_node *nd;
-
-	if (!dsos__read_build_ids(&session->header, true))
-		return 0;
-
-	for (nd = rb_first(&session->machines); nd; nd = rb_next(nd)) {
-		pos = rb_entry(nd, struct machine, rb_node);
-		if (machine__is_host(pos)) {
-			kmisc = PERF_RECORD_MISC_KERNEL;
-			umisc = PERF_RECORD_MISC_USER;
-		} else {
-			kmisc = PERF_RECORD_MISC_GUEST_KERNEL;
-			umisc = PERF_RECORD_MISC_GUEST_USER;
-		}
-
-		err = __event_synthesize_build_ids(&pos->kernel_dsos, kmisc,
-						   process, pos, session);
-		if (err == 0)
-			err = __event_synthesize_build_ids(&pos->user_dsos, umisc,
-							   process, pos, session);
-		if (err)
-			break;
-	}
-
-	if (err < 0) {
-		pr_debug("failed to synthesize build ids\n");
-		return err;
-	}
-
-	dsos__cache_build_ids(&session->header);
-
-	return 0;
 }
 
 int event__process_build_id(event_t *self,

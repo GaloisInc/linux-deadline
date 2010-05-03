@@ -446,13 +446,6 @@ static void atexit_header(void)
 
 		process_buildids();
 		perf_header__write(&session->header, output, true);
-	} else {
-		int err;
-
-		err = event__synthesize_build_ids(process_synthesized_event,
-						  session);
-		if (err < 0)
-			pr_err("Couldn't synthesize build ids.\n");
 	}
 }
 
@@ -555,7 +548,7 @@ static int __cmd_record(int argc, const char **argv)
 	}
 
 	session = perf_session__new(output_name, O_WRONLY,
-				    write_mode == WRITE_FORCE);
+				    write_mode == WRITE_FORCE, false);
 	if (session == NULL) {
 		pr_err("Not enough memory for reading perf file header\n");
 		return -1;
@@ -673,12 +666,15 @@ static int __cmd_record(int argc, const char **argv)
 						     nr_counters,
 						     process_synthesized_event,
 						     session);
-		if (err <= 0) {
-			pr_err("Couldn't record tracing data.\n");
-			return err;
-		}
-
-		advance_output(err);
+		/*
+		 * FIXME err <= 0 here actually means that there were no tracepoints
+		 * so its not really an error, just that we don't need to synthesize
+		 * anything.
+		 * We really have to return this more properly and also propagate
+		 * errors that now are calling die()
+		 */
+		if (err > 0)
+			advance_output(err);
 	}
 
 	machine = perf_session__find_host_machine(session);
