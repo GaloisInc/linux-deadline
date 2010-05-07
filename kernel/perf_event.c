@@ -83,14 +83,6 @@ extern __weak const struct pmu *hw_perf_event_init(struct perf_event *event)
 void __weak hw_perf_disable(void)		{ barrier(); }
 void __weak hw_perf_enable(void)		{ barrier(); }
 
-int __weak
-hw_perf_group_sched_in(struct perf_event *group_leader,
-	       struct perf_cpu_context *cpuctx,
-	       struct perf_event_context *ctx)
-{
-	return 0;
-}
-
 void __weak perf_event_print_debug(void)	{ }
 
 static DEFINE_PER_CPU(int, perf_disable_count);
@@ -341,6 +333,9 @@ list_del_event(struct perf_event *event, struct perf_event_context *ctx)
 	 */
 	if (event->state > PERF_EVENT_STATE_OFF)
 		event->state = PERF_EVENT_STATE_OFF;
+
+	if (event->state > PERF_EVENT_STATE_FREE)
+		return;
 
 	/*
 	 * If this was a group event with sibling events then
@@ -641,15 +636,20 @@ group_sched_in(struct perf_event *group_event,
 	       struct perf_cpu_context *cpuctx,
 	       struct perf_event_context *ctx)
 {
-	struct perf_event *event, *partial_group;
+	struct perf_event *event, *partial_group = NULL;
+	const struct pmu *pmu = group_event->pmu;
+	bool txn = false;
 	int ret;
 
 	if (group_event->state == PERF_EVENT_STATE_OFF)
 		return 0;
 
-	ret = hw_perf_group_sched_in(group_event, cpuctx, ctx);
-	if (ret)
-		return ret < 0 ? ret : 0;
+	/* Check if group transaction availabe */
+	if (pmu->start_txn)
+		txn = true;
+
+	if (txn)
+		pmu->start_txn(pmu);
 
 	if (event_sched_in(group_event, cpuctx, ctx))
 		return -EAGAIN;
@@ -664,9 +664,19 @@ group_sched_in(struct perf_event *group_event,
 		}
 	}
 
-	return 0;
+	if (txn) {
+		ret = pmu->commit_txn(pmu);
+		if (!ret) {
+			pmu->cancel_txn(pmu);
+
+			return 0;
+		}
+	}
 
 group_error:
+	if (txn)
+		pmu->cancel_txn(pmu);
+
 	/*
 	 * Groups can be scheduled in as one unit only, so undo any
 	 * partial group before returning:
@@ -1861,8 +1871,22 @@ int perf_event_release_kernel(struct perf_event *event)
 {
 	struct perf_event_context *ctx = event->ctx;
 
+	event->state = PERF_EVENT_STATE_FREE;
+
 	WARN_ON_ONCE(ctx->parent_ctx);
-	mutex_lock(&ctx->mutex);
+	/*
+	 * There are two ways this annotation is useful:
+	 *
+	 *  1) there is a lock recursion from perf_event_exit_task
+	 *     see the comment there.
+	 *
+	 *  2) there is a lock-inversion with mmap_sem through
+	 *     perf_event_read_group(), which takes faults while
+	 *     holding ctx->mutex, however this is called after
+	 *     the last filedesc died, so there is no possibility
+	 *     to trigger the AB-BA case.
+	 */
+	mutex_lock_nested(&ctx->mutex, SINGLE_DEPTH_NESTING);
 	perf_event_remove_from_context(event);
 	mutex_unlock(&ctx->mutex);
 
@@ -5300,7 +5324,7 @@ void perf_event_exit_task(struct task_struct *child)
 	 *
 	 * But since its the parent context it won't be the same instance.
 	 */
-	mutex_lock_nested(&child_ctx->mutex, SINGLE_DEPTH_NESTING);
+	mutex_lock(&child_ctx->mutex);
 
 again:
 	list_for_each_entry_safe(child_event, tmp, &child_ctx->pinned_groups,
