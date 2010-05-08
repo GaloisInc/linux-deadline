@@ -406,11 +406,6 @@ static u64 p4_pmu_event_map(int hw_event)
 	unsigned int esel;
 	u64 config;
 
-	if (hw_event > ARRAY_SIZE(p4_general_events)) {
-		printk_once(KERN_ERR "P4 PMU: Bad index: %i\n", hw_event);
-		return 0;
-	}
-
 	config = p4_general_events[hw_event];
 	bind = p4_config_get_bind(config);
 	esel = P4_OPCODE_ESEL(bind->opcode);
@@ -421,7 +416,9 @@ static u64 p4_pmu_event_map(int hw_event)
 
 static int p4_hw_config(struct perf_event *event)
 {
-	int cpu = raw_smp_processor_id();
+	int cpu = get_cpu();
+	int rc = 0;
+	unsigned int evnt;
 	u32 escr, cccr;
 
 	/*
@@ -439,23 +436,33 @@ static int p4_hw_config(struct perf_event *event)
 	if (p4_ht_active() && p4_ht_thread(cpu))
 		event->hw.config = p4_set_ht_bit(event->hw.config);
 
-	if (event->attr.type != PERF_TYPE_RAW)
-		return 0;
+	if (event->attr.type == PERF_TYPE_RAW) {
 
-	/*
-	 * We don't control raw events so it's up to the caller
-	 * to pass sane values (and we don't count the thread number
-	 * on HT machine but allow HT-compatible specifics to be
-	 * passed on)
-	 *
-	 * XXX: HT wide things should check perf_paranoid_cpu() &&
-	 *      CAP_SYS_ADMIN
-	 */
-	event->hw.config |= event->attr.config &
-		(p4_config_pack_escr(P4_ESCR_MASK_HT) |
-		 p4_config_pack_cccr(P4_CCCR_MASK_HT));
+		/* user data may have out-of-bound event index */
+		evnt = p4_config_unpack_event(event->attr.config);
+		if (evnt >= ARRAY_SIZE(p4_event_bind_map)) {
+			rc = -EINVAL;
+			goto out;
+		}
 
-	return x86_setup_perfctr(event);
+		/*
+		 * We don't control raw events so it's up to the caller
+		 * to pass sane values (and we don't count the thread number
+		 * on HT machine but allow HT-compatible specifics to be
+		 * passed on)
+		 *
+		 * XXX: HT wide things should check perf_paranoid_cpu() &&
+		 *      CAP_SYS_ADMIN
+		 */
+		event->hw.config |= event->attr.config &
+			(p4_config_pack_escr(P4_ESCR_MASK_HT) |
+			 p4_config_pack_cccr(P4_CCCR_MASK_HT));
+	}
+
+	rc = x86_setup_perfctr(event);
+out:
+	put_cpu();
+	return rc;
 }
 
 static inline void p4_pmu_clear_cccr_ovf(struct hw_perf_event *hwc)
