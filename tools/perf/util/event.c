@@ -493,8 +493,10 @@ int event__process_mmap(event_t *self, struct perf_session *session)
 		return 0;
 	}
 
-	thread = perf_session__findnew(session, self->mmap.pid);
 	machine = perf_session__find_host_machine(session);
+	if (machine == NULL)
+		goto out_problem;
+	thread = perf_session__findnew(session, self->mmap.pid);
 	map = map__new(&machine->user_dsos, self->mmap.start,
 			self->mmap.len, self->mmap.pgoff,
 			self->mmap.pid, self->mmap.filename,
@@ -552,6 +554,10 @@ void thread__find_addr_map(struct thread *self,
 	if (cpumode == PERF_RECORD_MISC_KERNEL && perf_host) {
 		al->level = 'k';
 		machine = perf_session__find_host_machine(session);
+		if (machine == NULL) {
+			al->map = NULL;
+			return;
+		}
 		mg = &machine->kmaps;
 	} else if (cpumode == PERF_RECORD_MISC_USER && perf_host) {
 		al->level = '.';
@@ -559,7 +565,7 @@ void thread__find_addr_map(struct thread *self,
 	} else if (cpumode == PERF_RECORD_MISC_GUEST_KERNEL && perf_guest) {
 		al->level = 'g';
 		machine = perf_session__find_machine(session, pid);
-		if (!machine) {
+		if (machine == NULL) {
 			al->map = NULL;
 			return;
 		}
@@ -650,6 +656,16 @@ int event__preprocess_sample(const event_t *self, struct perf_session *session,
 		goto out_filtered;
 
 	dump_printf(" ... thread: %s:%d\n", thread->comm, thread->pid);
+	/*
+	 * Have we already created the kernel maps for the host machine?
+	 *
+	 * This should have happened earlier, when we processed the kernel MMAP
+	 * events, but for older perf.data files there was no such thing, so do
+	 * it now.
+	 */
+	if (cpumode == PERF_RECORD_MISC_KERNEL &&
+	    session->host_machine.vmlinux_maps[MAP__FUNCTION] == NULL)
+		machine__create_kernel_maps(&session->host_machine);
 
 	thread__find_addr_map(thread, session, cpumode, MAP__FUNCTION,
 			      self->ip.pid, self->ip.ip, al);
@@ -676,6 +692,13 @@ int event__preprocess_sample(const event_t *self, struct perf_session *session,
 			dso__calc_col_width(al->map->dso);
 
 		al->sym = map__find_symbol(al->map, al->addr, filter);
+	} else {
+		const unsigned int unresolved_col_width = BITS_PER_LONG / 4;
+
+		if (dsos__col_width < unresolved_col_width &&
+		    !symbol_conf.col_width_list_str && !symbol_conf.field_sep &&
+		    !symbol_conf.dso_list)
+			dsos__col_width = unresolved_col_width;
 	}
 
 	if (symbol_conf.sym_list && al->sym &&
