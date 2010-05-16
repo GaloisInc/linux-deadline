@@ -323,6 +323,7 @@ static int ui_browser__run(struct ui_browser *self, const char *title,
 	newtFormAddHotKey(self->form, NEWT_KEY_PGDN);
 	newtFormAddHotKey(self->form, NEWT_KEY_HOME);
 	newtFormAddHotKey(self->form, NEWT_KEY_END);
+	newtFormAddHotKey(self->form, NEWT_KEY_LEFT);
 
 	if (ui_browser__refresh_entries(self) < 0)
 		return -1;
@@ -408,6 +409,7 @@ static int ui_browser__run(struct ui_browser *self, const char *title,
 		}
 			break;
 		case NEWT_KEY_ESCAPE:
+		case NEWT_KEY_LEFT:
 		case CTRL('c'):
 		case 'Q':
 		case 'q':
@@ -616,7 +618,7 @@ static void hist_entry__annotate_browser(struct hist_entry *self)
 	if (hist_entry__annotate(self, &head) < 0)
 		return;
 
-	ui_helpline__push("Press ESC to exit");
+	ui_helpline__push("Press <- or ESC to exit");
 
 	memset(&browser, 0, sizeof(browser));
 	browser.entries = &head;
@@ -750,6 +752,10 @@ static int hist_browser__populate(struct hist_browser *self, struct hists *hists
 
 	newtFormAddHotKey(self->form, 'A');
 	newtFormAddHotKey(self->form, 'a');
+	newtFormAddHotKey(self->form, 'D');
+	newtFormAddHotKey(self->form, 'd');
+	newtFormAddHotKey(self->form, 'T');
+	newtFormAddHotKey(self->form, 't');
 	newtFormAddHotKey(self->form, NEWT_KEY_RIGHT);
 	newtFormAddHotKey(self->form, NEWT_KEY_LEFT);
 	newtFormAddComponents(self->form, self->tree, NULL);
@@ -832,12 +838,24 @@ int hists__browse(struct hists *self, const char *helpline, const char *input_na
 		    annotate = -2, zoom_dso = -2, zoom_thread = -2;
 
 		newtFormRun(browser->form, &es);
+
+		thread = hist_browser__selected_thread(browser);
+		dso = browser->selection->map ? browser->selection->map->dso : NULL;
+
 		if (es.reason == NEWT_EXIT_HOTKEY) {
-			if (toupper(es.u.key) == 'A')
+			switch (toupper(es.u.key)) {
+			case 'A':
 				goto do_annotate;
-			if (es.u.key == NEWT_KEY_ESCAPE ||
-			    toupper(es.u.key) == 'Q' ||
-			    es.u.key == CTRL('c')) {
+			case 'D':
+				goto zoom_dso;
+			case 'T':
+				goto zoom_thread;
+			default:;
+			}
+			if (toupper(es.u.key) == 'Q' ||
+			    es.u.key == CTRL('c'))
+				break;
+			if (es.u.key == NEWT_KEY_ESCAPE) {
 				if (dialog_yesno("Do you really want to exit?"))
 					break;
 				else
@@ -863,7 +881,6 @@ int hists__browse(struct hists *self, const char *helpline, const char *input_na
 			     browser->selection->sym->name) > 0)
 			annotate = nr_options++;
 
-		thread = hist_browser__selected_thread(browser);
 		if (thread != NULL &&
 		    asprintf(&options[nr_options], "Zoom %s %s(%d) thread",
 			     (thread_filter ? "out of" : "into"),
@@ -871,7 +888,6 @@ int hists__browse(struct hists *self, const char *helpline, const char *input_na
 			     thread->pid) > 0)
 			zoom_thread = nr_options++;
 
-		dso = browser->selection->map ? browser->selection->map->dso : NULL;
 		if (dso != NULL &&
 		    asprintf(&options[nr_options], "Zoom %s %s DSO",
 			     (dso_filter ? "out of" : "into"),
@@ -890,10 +906,10 @@ int hists__browse(struct hists *self, const char *helpline, const char *input_na
 
 		if (choice == -1)
 			continue;
-do_annotate:
+
 		if (choice == annotate) {
 			struct hist_entry *he;
-
+do_annotate:
 			if (browser->selection->map->dso->origin == DSO__ORIG_KERNEL) {
 				ui_helpline__puts("No vmlinux file found, can't "
 						 "annotate with just a "
@@ -907,12 +923,15 @@ do_annotate:
 
 			hist_entry__annotate_browser(he);
 		} else if (choice == zoom_dso) {
+zoom_dso:
 			if (dso_filter) {
 				pstack__remove(fstack, &dso_filter);
 zoom_out_dso:
 				ui_helpline__pop();
 				dso_filter = NULL;
 			} else {
+				if (dso == NULL)
+					continue;
 				ui_helpline__fpush("To zoom out press <- or -> + \"Zoom out of %s DSO\"",
 						   dso->kernel ? "the Kernel" : dso->short_name);
 				dso_filter = dso;
@@ -924,6 +943,7 @@ zoom_out_dso:
 			if (hist_browser__populate(browser, self, msg) < 0)
 				goto out;
 		} else if (choice == zoom_thread) {
+zoom_thread:
 			if (thread_filter) {
 				pstack__remove(fstack, &thread_filter);
 zoom_out_thread:
