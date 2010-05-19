@@ -145,7 +145,6 @@ __mutex_lock_common(struct mutex *lock, long state, unsigned int subclass,
 	struct task_struct *task = current;
 	struct mutex_waiter waiter;
 	unsigned long flags;
-	unsigned long timeout;
 
 	preempt_disable();
 	mutex_acquire(&lock->dep_map, subclass, 0, ip);
@@ -169,22 +168,15 @@ __mutex_lock_common(struct mutex *lock, long state, unsigned int subclass,
 	 * to serialize everything.
 	 */
 
-	for (timeout = jiffies + 2; time_before(jiffies, timeout);) {
+	for (;;) {
 		struct thread_info *owner;
-
-		/*
-		 * If we own the BKL, then don't spin. The owner of the mutex
-		 * might be waiting on us to release the BKL.
-		 */
-		if (current->lock_depth >= 0)
-			break;
 
 		/*
 		 * If there's an owner, wait for it to either
 		 * release the lock or go to sleep.
 		 */
 		owner = ACCESS_ONCE(lock->owner);
-		if (owner && !mutex_spin_on_owner(lock, owner, timeout))
+		if (owner && !mutex_spin_on_owner(lock, owner))
 			break;
 
 		if (atomic_cmpxchg(&lock->count, 1, 0) == 1) {
