@@ -1131,6 +1131,10 @@ bool __dsos__read_build_ids(struct list_head *head, bool with_hits)
 	list_for_each_entry(pos, head, node) {
 		if (with_hits && !pos->hit)
 			continue;
+		if (pos->has_build_id) {
+			have_build_id = true;
+			continue;
+		}
 		if (filename__read_build_id(pos->long_name, pos->build_id,
 					    sizeof(pos->build_id)) > 0) {
 			have_build_id	  = true;
@@ -1933,6 +1937,12 @@ static size_t __dsos__fprintf_buildid(struct list_head *head, FILE *fp,
 	return ret;
 }
 
+size_t machine__fprintf_dsos_buildid(struct machine *self, FILE *fp, bool with_hits)
+{
+	return __dsos__fprintf_buildid(&self->kernel_dsos, fp, with_hits) +
+	       __dsos__fprintf_buildid(&self->user_dsos, fp, with_hits);
+}
+
 size_t machines__fprintf_dsos_buildid(struct rb_root *self, FILE *fp, bool with_hits)
 {
 	struct rb_node *nd;
@@ -1940,8 +1950,7 @@ size_t machines__fprintf_dsos_buildid(struct rb_root *self, FILE *fp, bool with_
 
 	for (nd = rb_first(self); nd; nd = rb_next(nd)) {
 		struct machine *pos = rb_entry(nd, struct machine, rb_node);
-		ret += __dsos__fprintf_buildid(&pos->kernel_dsos, fp, with_hits);
-		ret += __dsos__fprintf_buildid(&pos->user_dsos, fp, with_hits);
+		ret += machine__fprintf_dsos_buildid(pos, fp, with_hits);
 	}
 	return ret;
 }
