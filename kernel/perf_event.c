@@ -2297,11 +2297,6 @@ unlock:
 	rcu_read_unlock();
 }
 
-static unsigned long perf_data_size(struct perf_mmap_data *data)
-{
-	return data->nr_pages << (PAGE_SHIFT + data->data_order);
-}
-
 #ifndef CONFIG_PERF_USE_VMALLOC
 
 /*
@@ -2359,7 +2354,6 @@ perf_mmap_data_alloc(struct perf_event *event, int nr_pages)
 			goto fail_data_pages;
 	}
 
-	data->data_order = 0;
 	data->nr_pages = nr_pages;
 
 	return data;
@@ -2395,6 +2389,11 @@ static void perf_mmap_data_free(struct perf_mmap_data *data)
 	kfree(data);
 }
 
+static inline int page_order(struct perf_mmap_data *data)
+{
+	return 0;
+}
+
 #else
 
 /*
@@ -2403,10 +2402,15 @@ static void perf_mmap_data_free(struct perf_mmap_data *data)
  * Required for architectures that have d-cache aliasing issues.
  */
 
+static inline int page_order(struct perf_mmap_data *data)
+{
+	return data->page_order;
+}
+
 static struct page *
 perf_mmap_to_page(struct perf_mmap_data *data, unsigned long pgoff)
 {
-	if (pgoff > (1UL << data->data_order))
+	if (pgoff > (1UL << page_order(data)))
 		return NULL;
 
 	return vmalloc_to_page((void *)data->user_page + pgoff * PAGE_SIZE);
@@ -2426,7 +2430,7 @@ static void perf_mmap_data_free_work(struct work_struct *work)
 	int i, nr;
 
 	data = container_of(work, struct perf_mmap_data, work);
-	nr = 1 << data->data_order;
+	nr = 1 << page_order(data);
 
 	base = data->user_page;
 	for (i = 0; i < nr + 1; i++)
@@ -2465,7 +2469,7 @@ perf_mmap_data_alloc(struct perf_event *event, int nr_pages)
 
 	data->user_page = all_buf;
 	data->data_pages[0] = all_buf + PAGE_SIZE;
-	data->data_order = ilog2(nr_pages);
+	data->page_order = ilog2(nr_pages);
 	data->nr_pages = 1;
 
 	return data;
@@ -2478,6 +2482,11 @@ fail:
 }
 
 #endif
+
+static unsigned long perf_data_size(struct perf_mmap_data *data)
+{
+	return data->nr_pages << (PAGE_SHIFT + page_order(data));
+}
 
 static int perf_mmap_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
 {
@@ -2933,7 +2942,7 @@ again:
 	 */
 
 	if (!local_dec_and_test(&data->nest))
-		return;
+		goto out;
 
 	/*
 	 * Publish the known good head. Rely on the full barrier implied
@@ -2954,45 +2963,30 @@ again:
 	if (handle->wakeup != local_read(&data->wakeup))
 		perf_output_wakeup(handle);
 
+ out:
 	preempt_enable();
 }
 
-void perf_output_copy(struct perf_output_handle *handle,
+__always_inline void perf_output_copy(struct perf_output_handle *handle,
 		      const void *buf, unsigned int len)
 {
-	unsigned int pages_mask;
-	unsigned long offset;
-	unsigned int size;
-	void **pages;
-
-	offset		= handle->offset;
-	pages_mask	= handle->data->nr_pages - 1;
-	pages		= handle->data->data_pages;
-
 	do {
-		unsigned long page_offset;
-		unsigned long page_size;
-		int nr;
+		unsigned long size = min_t(unsigned long, handle->size, len);
 
-		nr	    = (offset >> PAGE_SHIFT) & pages_mask;
-		page_size   = 1UL << (handle->data->data_order + PAGE_SHIFT);
-		page_offset = offset & (page_size - 1);
-		size	    = min_t(unsigned int, page_size - page_offset, len);
+		memcpy(handle->addr, buf, size);
 
-		memcpy(pages[nr] + page_offset, buf, size);
+		len -= size;
+		handle->addr += size;
+		handle->size -= size;
+		if (!handle->size) {
+			struct perf_mmap_data *data = handle->data;
 
-		len	    -= size;
-		buf	    += size;
-		offset	    += size;
+			handle->page++;
+			handle->page &= data->nr_pages - 1;
+			handle->addr = data->data_pages[handle->page];
+			handle->size = PAGE_SIZE << page_order(data);
+		}
 	} while (len);
-
-	handle->offset = offset;
-
-	/*
-	 * Check we didn't copy past our reservation window, taking the
-	 * possible unsigned int wrap into account.
-	 */
-	WARN_ON_ONCE(((long)(handle->head - handle->offset)) < 0);
 }
 
 int perf_output_begin(struct perf_output_handle *handle,
@@ -3052,11 +3046,15 @@ int perf_output_begin(struct perf_output_handle *handle,
 			goto fail;
 	} while (local_cmpxchg(&data->head, offset, head) != offset);
 
-	handle->offset	= offset;
-	handle->head	= head;
+	if (head - local_read(&data->wakeup) > data->watermark)
+		local_add(data->watermark, &data->wakeup);
 
-	if (head - tail > data->watermark)
-		local_inc(&data->wakeup);
+	handle->page = offset >> (PAGE_SHIFT + page_order(data));
+	handle->page &= data->nr_pages - 1;
+	handle->size = offset & ((PAGE_SIZE << page_order(data)) - 1);
+	handle->addr = data->data_pages[handle->page];
+	handle->addr += handle->size;
+	handle->size = (PAGE_SIZE << page_order(data)) - handle->size;
 
 	if (have_lost) {
 		lost_event.header.type = PERF_RECORD_LOST;
@@ -4004,9 +4002,6 @@ static void perf_swevent_add(struct perf_event *event, u64 nr,
 	perf_swevent_overflow(event, 0, nmi, data, regs);
 }
 
-static int perf_tp_event_match(struct perf_event *event,
-				struct perf_sample_data *data);
-
 static int perf_exclude_event(struct perf_event *event,
 			      struct pt_regs *regs)
 {
@@ -4034,10 +4029,6 @@ static int perf_swevent_match(struct perf_event *event,
 		return 0;
 
 	if (perf_exclude_event(event, regs))
-		return 0;
-
-	if (event->attr.type == PERF_TYPE_TRACEPOINT &&
-	    !perf_tp_event_match(event, data))
 		return 0;
 
 	return 1;
@@ -4121,7 +4112,7 @@ end:
 
 int perf_swevent_get_recursion_context(void)
 {
-	struct perf_cpu_context *cpuctx = &get_cpu_var(perf_cpu_context);
+	struct perf_cpu_context *cpuctx = &__get_cpu_var(perf_cpu_context);
 	int rctx;
 
 	if (in_nmi())
@@ -4133,10 +4124,8 @@ int perf_swevent_get_recursion_context(void)
 	else
 		rctx = 0;
 
-	if (cpuctx->recursion[rctx]) {
-		put_cpu_var(perf_cpu_context);
+	if (cpuctx->recursion[rctx])
 		return -1;
-	}
 
 	cpuctx->recursion[rctx]++;
 	barrier();
@@ -4150,7 +4139,6 @@ void perf_swevent_put_recursion_context(int rctx)
 	struct perf_cpu_context *cpuctx = &__get_cpu_var(perf_cpu_context);
 	barrier();
 	cpuctx->recursion[rctx]--;
-	put_cpu_var(perf_cpu_context);
 }
 EXPORT_SYMBOL_GPL(perf_swevent_put_recursion_context);
 
@@ -4161,6 +4149,7 @@ void __perf_sw_event(u32 event_id, u64 nr, int nmi,
 	struct perf_sample_data data;
 	int rctx;
 
+	preempt_disable_notrace();
 	rctx = perf_swevent_get_recursion_context();
 	if (rctx < 0)
 		return;
@@ -4170,6 +4159,7 @@ void __perf_sw_event(u32 event_id, u64 nr, int nmi,
 	do_perf_sw_event(PERF_TYPE_SOFTWARE, event_id, nr, nmi, &data, regs);
 
 	perf_swevent_put_recursion_context(rctx);
+	preempt_enable_notrace();
 }
 
 static void perf_swevent_read(struct perf_event *event)
@@ -4485,30 +4475,14 @@ static int swevent_hlist_get(struct perf_event *event)
 
 #ifdef CONFIG_EVENT_TRACING
 
-void perf_tp_event(int event_id, u64 addr, u64 count, void *record,
-		   int entry_size, struct pt_regs *regs, void *event)
-{
-	const int type = PERF_TYPE_TRACEPOINT;
-	struct perf_sample_data data;
-	struct perf_raw_record raw = {
-		.size = entry_size,
-		.data = record,
-	};
+static const struct pmu perf_ops_tracepoint = {
+	.enable		= perf_trace_enable,
+	.disable	= perf_trace_disable,
+	.read		= perf_swevent_read,
+	.unthrottle	= perf_swevent_unthrottle,
+};
 
-	perf_sample_data_init(&data, addr);
-	data.raw = &raw;
-
-	if (!event) {
-		do_perf_sw_event(type, event_id, count, 1, &data, regs);
-		return;
-	}
-
-	if (perf_swevent_match(event, type, event_id, &data, regs))
-		perf_swevent_add(event, count, 1, &data, regs);
-}
-EXPORT_SYMBOL_GPL(perf_tp_event);
-
-static int perf_tp_event_match(struct perf_event *event,
+static int perf_tp_filter_match(struct perf_event *event,
 				struct perf_sample_data *data)
 {
 	void *record = data->raw->data;
@@ -4518,10 +4492,49 @@ static int perf_tp_event_match(struct perf_event *event,
 	return 0;
 }
 
+static int perf_tp_event_match(struct perf_event *event,
+				struct perf_sample_data *data,
+				struct pt_regs *regs)
+{
+	/*
+	 * All tracepoints are from kernel-space.
+	 */
+	if (event->attr.exclude_kernel)
+		return 0;
+
+	if (!perf_tp_filter_match(event, data))
+		return 0;
+
+	return 1;
+}
+
+void perf_tp_event(u64 addr, u64 count, void *record, int entry_size,
+		   struct pt_regs *regs, struct hlist_head *head)
+{
+	struct perf_sample_data data;
+	struct perf_event *event;
+	struct hlist_node *node;
+
+	struct perf_raw_record raw = {
+		.size = entry_size,
+		.data = record,
+	};
+
+	perf_sample_data_init(&data, addr);
+	data.raw = &raw;
+
+	rcu_read_lock();
+	hlist_for_each_entry_rcu(event, node, head, hlist_entry) {
+		if (perf_tp_event_match(event, &data, regs))
+			perf_swevent_add(event, count, 1, &data, regs);
+	}
+	rcu_read_unlock();
+}
+EXPORT_SYMBOL_GPL(perf_tp_event);
+
 static void tp_perf_event_destroy(struct perf_event *event)
 {
-	perf_trace_disable(event->attr.config);
-	swevent_hlist_put(event);
+	perf_trace_destroy(event);
 }
 
 static const struct pmu *tp_perf_event_init(struct perf_event *event)
@@ -4537,17 +4550,13 @@ static const struct pmu *tp_perf_event_init(struct perf_event *event)
 			!capable(CAP_SYS_ADMIN))
 		return ERR_PTR(-EPERM);
 
-	if (perf_trace_enable(event->attr.config, event))
+	err = perf_trace_init(event);
+	if (err)
 		return NULL;
 
 	event->destroy = tp_perf_event_destroy;
-	err = swevent_hlist_get(event);
-	if (err) {
-		perf_trace_disable(event->attr.config);
-		return ERR_PTR(err);
-	}
 
-	return &perf_ops_generic;
+	return &perf_ops_tracepoint;
 }
 
 static int perf_event_set_filter(struct perf_event *event, void __user *arg)
@@ -4574,12 +4583,6 @@ static void perf_event_free_filter(struct perf_event *event)
 }
 
 #else
-
-static int perf_tp_event_match(struct perf_event *event,
-				struct perf_sample_data *data)
-{
-	return 1;
-}
 
 static const struct pmu *tp_perf_event_init(struct perf_event *event)
 {
@@ -4917,6 +4920,13 @@ static int perf_event_set_output(struct perf_event *event, int output_fd)
 	int fput_needed = 0;
 	int ret = -EINVAL;
 
+	/*
+	 * Don't allow output of inherited per-task events. This would
+	 * create performance issues due to cross cpu access.
+	 */
+	if (event->cpu == -1 && event->attr.inherit)
+		return -EINVAL;
+
 	if (!output_fd)
 		goto set;
 
@@ -4935,6 +4945,18 @@ static int perf_event_set_output(struct perf_event *event, int output_fd)
 
 	/* Don't set an output fd when we already have an output channel */
 	if (event->data)
+		goto out;
+
+	/*
+	 * Don't allow cross-cpu buffers
+	 */
+	if (output_event->cpu != event->cpu)
+		goto out;
+
+	/*
+	 * If its not a per-cpu buffer, it must be the same task.
+	 */
+	if (output_event->cpu == -1 && output_event->ctx != event->ctx)
 		goto out;
 
 	atomic_long_inc(&output_file->f_count);
