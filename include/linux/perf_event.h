@@ -533,8 +533,10 @@ struct hw_perf_event {
 			struct hrtimer	hrtimer;
 		};
 #ifdef CONFIG_HAVE_HW_BREAKPOINT
-		/* breakpoint */
-		struct arch_hw_breakpoint	info;
+		struct { /* breakpoint */
+			struct arch_hw_breakpoint	info;
+			struct list_head		bp_list;
+		};
 #endif
 	};
 	local64_t			prev_count;
@@ -934,7 +936,7 @@ extern void __perf_sw_event(u32, u64, int, struct pt_regs *, u64);
 
 #ifndef perf_arch_fetch_caller_regs
 static inline void
-perf_arch_fetch_caller_regs(struct regs *regs, unsigned long ip) { }
+perf_arch_fetch_caller_regs(struct pt_regs *regs, unsigned long ip) { }
 #endif
 
 /*
