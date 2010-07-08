@@ -250,6 +250,12 @@ void __cpuinit mrst_arch_setup(void)
 		"Lincroft" : "Penwell");
 }
 
+/* MID systems don't have i8042 controller */
+static int mrst_i8042_detect(void)
+{
+	return 0;
+}
+
 /*
  * Moorestown specific x86_init function overrides and early setup
  * calls.
@@ -269,6 +275,7 @@ void __init x86_mrst_early_setup(void)
 	x86_cpuinit.setup_percpu_clockev = apbt_setup_secondary_clock;
 
 	x86_platform.calibrate_tsc = mrst_calibrate_tsc;
+	x86_platform.i8042_detect = mrst_i8042_detect;
 	x86_init.pci.init = pci_mrst_init;
 	x86_init.pci.fixup_irqs = x86_init_noop;
 
