@@ -2427,13 +2427,13 @@ static inline void update_sg_lb_stats(struct sched_domain *sd,
 	 * domains. In the newly idle case, we will allow all the cpu's
 	 * to do the newly idle load balance.
 	 */
-	if (idle != CPU_NEWLY_IDLE && local_group &&
-	    balance_cpu != this_cpu) {
-		*balance = 0;
-		return;
+	if (idle != CPU_NEWLY_IDLE && local_group) {
+		if (balance_cpu != this_cpu) {
+			*balance = 0;
+			return;
+		}
+		update_group_power(sd, this_cpu);
 	}
-
-	update_group_power(sd, this_cpu);
 
 	/* Adjust by relative CPU power of the group */
 	sgs->avg_load = (sgs->group_load * SCHED_LOAD_SCALE) / group->cpu_power;
@@ -3598,6 +3598,7 @@ static void nohz_idle_balance(int this_cpu, enum cpu_idle_type idle)
 		}
 
 		raw_spin_lock_irq(&this_rq->lock);
+		update_rq_clock(this_rq);
 		update_cpu_load(this_rq);
 		raw_spin_unlock_irq(&this_rq->lock);
 
