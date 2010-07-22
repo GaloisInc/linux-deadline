@@ -16,6 +16,11 @@
  */
 u64 pcntxt_mask;
 
+/*
+ * Represents init state for the supported extended state.
+ */
+static struct xsave_struct *init_xstate_buf;
+
 struct _fpx_sw_bytes fx_sw_reserved;
 #ifdef CONFIG_IA32_EMULATION
 struct _fpx_sw_bytes fx_sw_reserved_ia32;
@@ -340,11 +345,6 @@ static void prepare_fx_sw_frame(void)
 #endif
 }
 
-/*
- * Represents init state for the supported extended state.
- */
-struct xsave_struct *init_xstate_buf;
-
 #ifdef CONFIG_X86_64
 unsigned int sig_xstate_size = sizeof(struct _fpstate);
 #endif
@@ -352,17 +352,9 @@ unsigned int sig_xstate_size = sizeof(struct _fpstate);
 /*
  * Enable the extended processor state save/restore feature
  */
-static void __cpuinit __xsave_init(void)
+static inline void xstate_enable(void)
 {
-	if (!cpu_has_xsave)
-		return;
-
 	set_in_cr4(X86_CR4_OSXSAVE);
-
-	/*
-	 * Enable all the features that the HW is capable of
-	 * and the Linux kernel is aware of.
-	 */
 	xsetbv(XCR_XFEATURE_ENABLED_MASK, pcntxt_mask);
 }
 
@@ -370,7 +362,7 @@ static void __cpuinit __xsave_init(void)
  * Record the offsets and sizes of different state managed by the xsave
  * memory layout.
  */
-static void setup_xstate_features(void)
+static void __init setup_xstate_features(void)
 {
 	int eax, ebx, ecx, edx, leaf = 0x2;
 
@@ -379,7 +371,7 @@ static void setup_xstate_features(void)
 	xstate_sizes = alloc_bootmem(xstate_features * sizeof(int));
 
 	do {
-		cpuid_count(0xd, leaf, &eax, &ebx, &ecx, &edx);
+		cpuid_count(XSTATE_CPUID, leaf, &eax, &ebx, &ecx, &edx);
 
 		if (eax == 0)
 			break;
@@ -421,11 +413,16 @@ static void __init setup_xstate_init(void)
 /*
  * Enable and initialize the xsave feature.
  */
-void __ref xsave_cntxt_init(void)
+static void __init xstate_enable_boot_cpu(void)
 {
 	unsigned int eax, ebx, ecx, edx;
 
-	cpuid_count(0xd, 0, &eax, &ebx, &ecx, &edx);
+	if (boot_cpu_data.cpuid_level < XSTATE_CPUID) {
+		WARN(1, KERN_ERR "XSTATE_CPUID missing\n");
+		return;
+	}
+
+	cpuid_count(XSTATE_CPUID, 0, &eax, &ebx, &ecx, &edx);
 	pcntxt_mask = eax + ((u64)edx << 32);
 
 	if ((pcntxt_mask & XSTATE_FPSSE) != XSTATE_FPSSE) {
@@ -438,12 +435,13 @@ void __ref xsave_cntxt_init(void)
 	 * Support only the state known to OS.
 	 */
 	pcntxt_mask = pcntxt_mask & XCNTXT_MASK;
-	__xsave_init();
+
+	xstate_enable();
 
 	/*
 	 * Recompute the context size for enabled features
 	 */
-	cpuid_count(0xd, 0, &eax, &ebx, &ecx, &edx);
+	cpuid_count(XSTATE_CPUID, 0, &eax, &ebx, &ecx, &edx);
 	xstate_size = ebx;
 
 	update_regset_xstate_info(xstate_size, pcntxt_mask);
@@ -456,12 +454,22 @@ void __ref xsave_cntxt_init(void)
 	       pcntxt_mask, xstate_size);
 }
 
+/*
+ * For the very first instance, this calls xstate_enable_boot_cpu();
+ * for all subsequent instances, this calls xstate_enable().
+ *
+ * This is somewhat obfuscated due to the lack of powerful enough
+ * overrides for the section checks.
+ */
 void __cpuinit xsave_init(void)
 {
-	/*
-	 * Boot processor to setup the FP and extended state context info.
-	 */
-	if (!smp_processor_id())
-		init_thread_xstate();
-	__xsave_init();
+	static __refdata void (*next_func)(void) = xstate_enable_boot_cpu;
+	void (*this_func)(void);
+
+	if (!cpu_has_xsave)
+		return;
+
+	this_func = next_func;
+	next_func = xstate_enable;
+	this_func();
 }
