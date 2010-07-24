@@ -441,7 +441,7 @@
  */
 #define INIT_TASK_DATA_SECTION(align)					\
 	. = ALIGN(align);						\
-	.data..init_task : {						\
+	.data..init_task :  AT(ADDR(.data..init_task) - LOAD_OFFSET) {	\
 		INIT_TASK_DATA(align)					\
 	}
 
