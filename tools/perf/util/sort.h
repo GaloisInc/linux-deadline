@@ -36,12 +36,14 @@ extern struct sort_entry sort_comm;
 extern struct sort_entry sort_dso;
 extern struct sort_entry sort_sym;
 extern struct sort_entry sort_parent;
-extern unsigned int dsos__col_width;
-extern unsigned int comms__col_width;
-extern unsigned int threads__col_width;
-extern unsigned int cpus__col_width;
 extern enum sort_type sort__first_dimension;
 
+/**
+ * struct hist_entry - histogram entry
+ *
+ * @row_offset - offset from the first callchain expanded to appear on screen
+ * @nr_rows - rows expanded in callchain, recalculated on folding/unfolding
+ */
 struct hist_entry {
 	struct rb_node		rb_node;
 	u64			period;
@@ -54,6 +56,12 @@ struct hist_entry {
 	u64			ip;
 	s32			cpu;
 	u32			nr_events;
+
+	/* XXX These two should move to some tree widget lib */
+	u16			row_offset;
+	u16			nr_rows;
+
+	bool			init_have_children;
 	char			level;
 	u8			filtered;
 	struct symbol		*parent;
@@ -87,7 +95,7 @@ struct sort_entry {
 	int64_t (*se_collapse)(struct hist_entry *, struct hist_entry *);
 	int	(*se_snprintf)(struct hist_entry *self, char *bf, size_t size,
 			       unsigned int width);
-	unsigned int *se_width;
+	u8	se_width_idx;
 	bool	elide;
 };
 

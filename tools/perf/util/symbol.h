@@ -68,7 +68,6 @@ struct symbol_conf {
 			show_nr_samples,
 			use_callchain,
 			exclude_other,
-			full_paths,
 			show_cpu_utilization;
 	const char	*vmlinux_name,
 			*source_prefix,
@@ -102,6 +101,8 @@ struct ref_reloc_sym {
 struct map_symbol {
 	struct map    *map;
 	struct symbol *sym;
+	bool	      unfolded;
+	bool	      has_children;
 };
 
 struct addr_location {
@@ -125,12 +126,14 @@ struct dso {
 	struct list_head node;
 	struct rb_root	 symbols[MAP__NR_TYPES];
 	struct rb_root	 symbol_names[MAP__NR_TYPES];
+	enum dso_kernel_type	kernel;
 	u8		 adjust_symbols:1;
 	u8		 slen_calculated:1;
 	u8		 has_build_id:1;
-	enum dso_kernel_type	kernel;
 	u8		 hit:1;
 	u8		 annotate_warned:1;
+	u8		 sname_alloc:1;
+	u8		 lname_alloc:1;
 	unsigned char	 origin;
 	u8		 sorted_by_name;
 	u8		 loaded;
@@ -145,6 +148,8 @@ struct dso {
 struct dso *dso__new(const char *name);
 struct dso *dso__new_kernel(const char *name);
 void dso__delete(struct dso *self);
+
+int dso__name_len(const struct dso *self);
 
 bool dso__loaded(const struct dso *self, enum map_type type);
 bool dso__sorted_by_name(const struct dso *self, enum map_type type);
@@ -214,6 +219,7 @@ int machines__create_kernel_maps(struct rb_root *self, pid_t pid);
 int machines__create_guest_kernel_maps(struct rb_root *self);
 
 int symbol__init(void);
+void symbol__exit(void);
 bool symbol_type__is_a(char symbol_type, enum map_type map_type);
 
 size_t machine__fprintf_vmlinux_path(struct machine *self, FILE *fp);

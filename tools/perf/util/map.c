@@ -17,16 +17,6 @@ static inline int is_anon_memory(const char *filename)
 	return strcmp(filename, "//anon") == 0;
 }
 
-static int strcommon(const char *pathname, char *cwd, int cwdlen)
-{
-	int n = 0;
-
-	while (n < cwdlen && pathname[n] == cwd[n])
-		++n;
-
-	return n;
-}
-
 void map__init(struct map *self, enum map_type type,
 	       u64 start, u64 end, u64 pgoff, struct dso *dso)
 {
@@ -43,7 +33,7 @@ void map__init(struct map *self, enum map_type type,
 
 struct map *map__new(struct list_head *dsos__list, u64 start, u64 len,
 		     u64 pgoff, u32 pid, char *filename,
-		     enum map_type type, char *cwd, int cwdlen)
+		     enum map_type type)
 {
 	struct map *self = malloc(sizeof(*self));
 
@@ -51,16 +41,6 @@ struct map *map__new(struct list_head *dsos__list, u64 start, u64 len,
 		char newfilename[PATH_MAX];
 		struct dso *dso;
 		int anon;
-
-		if (cwd) {
-			int n = strcommon(filename, cwd, cwdlen);
-
-			if (n == cwdlen) {
-				snprintf(newfilename, sizeof(newfilename),
-					 ".%s", filename + n);
-				filename = newfilename;
-			}
-		}
 
 		anon = is_anon_memory(filename);
 
@@ -246,6 +226,39 @@ void map_groups__init(struct map_groups *self)
 		INIT_LIST_HEAD(&self->removed_maps[i]);
 	}
 	self->machine = NULL;
+}
+
+static void maps__delete(struct rb_root *self)
+{
+	struct rb_node *next = rb_first(self);
+
+	while (next) {
+		struct map *pos = rb_entry(next, struct map, rb_node);
+
+		next = rb_next(&pos->rb_node);
+		rb_erase(&pos->rb_node, self);
+		map__delete(pos);
+	}
+}
+
+static void maps__delete_removed(struct list_head *self)
+{
+	struct map *pos, *n;
+
+	list_for_each_entry_safe(pos, n, self, node) {
+		list_del(&pos->node);
+		map__delete(pos);
+	}
+}
+
+void map_groups__exit(struct map_groups *self)
+{
+	int i;
+
+	for (i = 0; i < MAP__NR_TYPES; ++i) {
+		maps__delete(&self->maps[i]);
+		maps__delete_removed(&self->removed_maps[i]);
+	}
 }
 
 void map_groups__flush(struct map_groups *self)
@@ -524,6 +537,32 @@ int machine__init(struct machine *self, const char *root_dir, pid_t pid)
 	self->pid	    = pid;
 	self->root_dir      = strdup(root_dir);
 	return self->root_dir == NULL ? -ENOMEM : 0;
+}
+
+static void dsos__delete(struct list_head *self)
+{
+	struct dso *pos, *n;
+
+	list_for_each_entry_safe(pos, n, self, node) {
+		list_del(&pos->node);
+		dso__delete(pos);
+	}
+}
+
+void machine__exit(struct machine *self)
+{
+	struct kmap *kmap = map__kmap(self->vmlinux_maps[MAP__FUNCTION]);
+
+	if (kmap->ref_reloc_sym) {
+		free((char *)kmap->ref_reloc_sym->name);
+		free(kmap->ref_reloc_sym);
+	}
+
+	map_groups__exit(&self->kmaps);
+	dsos__delete(&self->user_dsos);
+	dsos__delete(&self->kernel_dsos);
+	free(self->root_dir);
+	self->root_dir = NULL;
 }
 
 struct machine *machines__add(struct rb_root *self, pid_t pid,
