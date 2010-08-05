@@ -568,6 +568,7 @@ struct ceph_osdmap *osdmap_decode(void **p, void *end)
 		if (ev > CEPH_PG_POOL_VERSION) {
 			pr_warning("got unknown v %d > %d of ceph_pg_pool\n",
 				   ev, CEPH_PG_POOL_VERSION);
+			kfree(pi);
 			goto bad;
 		}
 		__decode_pool(p, pi);
@@ -706,7 +707,8 @@ struct ceph_osdmap *osdmap_apply_incremental(void **p, void *end,
 		     len, *p, end);
 		newcrush = crush_decode(*p, min(*p+len, end));
 		if (IS_ERR(newcrush))
-			return ERR_PTR(PTR_ERR(newcrush));
+			return ERR_CAST(newcrush);
+		*p += len;
 	}
 
 	/* new flags? */
@@ -829,12 +831,13 @@ struct ceph_osdmap *osdmap_apply_incremental(void **p, void *end,
 		/* remove any? */
 		while (rbp && pgid_cmp(rb_entry(rbp, struct ceph_pg_mapping,
 						node)->pgid, pgid) <= 0) {
-			struct rb_node *cur = rbp;
+			struct ceph_pg_mapping *cur =
+				rb_entry(rbp, struct ceph_pg_mapping, node);
+			
 			rbp = rb_next(rbp);
-			dout(" removed pg_temp %llx\n",
-			     *(u64 *)&rb_entry(cur, struct ceph_pg_mapping,
-					       node)->pgid);
-			rb_erase(cur, &map->pg_temp);
+			dout(" removed pg_temp %llx\n", *(u64 *)&cur->pgid);
+			rb_erase(&cur->node, &map->pg_temp);
+			kfree(cur);
 		}
 
 		if (pglen) {
@@ -850,19 +853,22 @@ struct ceph_osdmap *osdmap_apply_incremental(void **p, void *end,
 			for (j = 0; j < pglen; j++)
 				pg->osds[j] = ceph_decode_32(p);
 			err = __insert_pg_mapping(pg, &map->pg_temp);
-			if (err)
+			if (err) {
+				kfree(pg);
 				goto bad;
+			}
 			dout(" added pg_temp %llx len %d\n", *(u64 *)&pgid,
 			     pglen);
 		}
 	}
 	while (rbp) {
-		struct rb_node *cur = rbp;
+		struct ceph_pg_mapping *cur =
+			rb_entry(rbp, struct ceph_pg_mapping, node);
+
 		rbp = rb_next(rbp);
-		dout(" removed pg_temp %llx\n",
-		     *(u64 *)&rb_entry(cur, struct ceph_pg_mapping,
-				       node)->pgid);
-		rb_erase(cur, &map->pg_temp);
+		dout(" removed pg_temp %llx\n", *(u64 *)&cur->pgid);
+		rb_erase(&cur->node, &map->pg_temp);
+		kfree(cur);
 	}
 
 	/* ignore the rest */
@@ -1041,12 +1047,33 @@ static int *calc_pg_raw(struct ceph_osdmap *osdmap, struct ceph_pg pgid,
 }
 
 /*
+ * Return acting set for given pgid.
+ */
+int ceph_calc_pg_acting(struct ceph_osdmap *osdmap, struct ceph_pg pgid,
+			int *acting)
+{
+	int rawosds[CEPH_PG_MAX_SIZE], *osds;
+	int i, o, num = CEPH_PG_MAX_SIZE;
+
+	osds = calc_pg_raw(osdmap, pgid, rawosds, &num);
+	if (!osds)
+		return -1;
+
+	/* primary is first up osd */
+	o = 0;
+	for (i = 0; i < num; i++)
+		if (ceph_osd_is_up(osdmap, osds[i]))
+			acting[o++] = osds[i];
+	return o;
+}
+
+/*
  * Return primary osd for given pgid, or -1 if none.
  */
 int ceph_calc_pg_primary(struct ceph_osdmap *osdmap, struct ceph_pg pgid)
 {
-	int rawosds[10], *osds;
-	int i, num = ARRAY_SIZE(rawosds);
+	int rawosds[CEPH_PG_MAX_SIZE], *osds;
+	int i, num = CEPH_PG_MAX_SIZE;
 
 	osds = calc_pg_raw(osdmap, pgid, rawosds, &num);
 	if (!osds)
@@ -1054,9 +1081,7 @@ int ceph_calc_pg_primary(struct ceph_osdmap *osdmap, struct ceph_pg pgid)
 
 	/* primary is first up osd */
 	for (i = 0; i < num; i++)
-		if (ceph_osd_is_up(osdmap, osds[i])) {
+		if (ceph_osd_is_up(osdmap, osds[i]))
 			return osds[i];
-			break;
-		}
 	return -1;
 }

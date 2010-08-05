@@ -173,10 +173,10 @@ __mutex_lock_common(struct mutex *lock, long state, unsigned int subclass,
 		struct thread_info *owner;
 
 		/*
-		 * If we own the BKL, then don't spin. The owner of the mutex
-		 * might be waiting on us to release the BKL.
+		 * If we own the BKL, then don't spin. The owner of
+		 * the mutex might be waiting on us to release the BKL.
 		 */
-		if (current->lock_depth >= 0)
+		if (unlikely(current->lock_depth >= 0))
 			break;
 
 		/*

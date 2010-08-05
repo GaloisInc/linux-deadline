@@ -1277,6 +1277,7 @@ void pcibios_allocate_bus_resources(struct pci_bus *bus)
 		printk(KERN_WARNING "PCI: Cannot allocate resource region "
 		       "%d of PCI bridge %d, will remap\n", i, bus->number);
 clear_resource:
+		res->start = res->end = 0;
 		res->flags = 0;
 	}
 
@@ -1507,7 +1508,7 @@ void pcibios_finish_adding_to_bus(struct pci_bus *bus)
 	pci_bus_add_devices(bus);
 
 	/* Fixup EEH */
-	eeh_add_device_tree_late(bus);
+	/* eeh_add_device_tree_late(bus); */
 }
 EXPORT_SYMBOL_GPL(pcibios_finish_adding_to_bus);
 
