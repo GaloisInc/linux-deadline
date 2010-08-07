@@ -23,6 +23,7 @@
 #include "session.h"
 #include "sort.h"
 #include "symbol.h"
+#include "ui/browser.h"
 
 #if SLANG_VERSION < 20104
 #define slsmg_printf(msg, args...) SLsmg_printf((char *)msg, ##args)
@@ -34,6 +35,8 @@
 #define slsmg_write_nstring SLsmg_write_nstring
 #define sltt_set_color SLtt_set_color
 #endif
+
+newtComponent newt_form__new(void);
 
 struct ui_progress {
 	newtComponent form, scale;
@@ -190,7 +193,7 @@ static void newt_form__set_exit_keys(newtComponent self)
 	newtFormAddHotKey(self, CTRL('c'));
 }
 
-static newtComponent newt_form__new(void)
+newtComponent newt_form__new(void)
 {
 	newtComponent self = newtForm(NULL, NULL, 0);
 	if (self)
@@ -290,186 +293,24 @@ static void ui__error_window(const char *fmt, ...)
 	va_end(ap);
 }
 
-#define HE_COLORSET_TOP		50
-#define HE_COLORSET_MEDIUM	51
-#define HE_COLORSET_NORMAL	52
-#define HE_COLORSET_SELECTED	53
-#define HE_COLORSET_CODE	54
-
-static int ui_browser__percent_color(double percent, bool current)
+static void annotate_browser__write(struct ui_browser *self, void *entry, int row)
 {
-	if (current)
-		return HE_COLORSET_SELECTED;
-	if (percent >= MIN_RED)
-		return HE_COLORSET_TOP;
-	if (percent >= MIN_GREEN)
-		return HE_COLORSET_MEDIUM;
-	return HE_COLORSET_NORMAL;
-}
+	struct objdump_line *ol = rb_entry(entry, struct objdump_line, node);
+	bool current_entry = ui_browser__is_current_entry(self, row);
+	int width = self->width;
 
-struct ui_browser {
-	newtComponent	form, sb;
-	u64		index, first_visible_entry_idx;
-	void		*first_visible_entry, *entries;
-	u16		top, left, width, height;
-	void		*priv;
-	unsigned int	(*refresh)(struct ui_browser *self);
-	void		(*write)(struct ui_browser *self, void *entry, int row);
-	void		(*seek)(struct ui_browser *self,
-				off_t offset, int whence);
-	u32		nr_entries;
-};
-
-static void ui_browser__list_head_seek(struct ui_browser *self,
-				       off_t offset, int whence)
-{
-	struct list_head *head = self->entries;
-	struct list_head *pos;
-
-	switch (whence) {
-	case SEEK_SET:
-		pos = head->next;
-		break;
-	case SEEK_CUR:
-		pos = self->first_visible_entry;
-		break;
-	case SEEK_END:
-		pos = head->prev;
-		break;
-	default:
-		return;
-	}
-
-	if (offset > 0) {
-		while (offset-- != 0)
-			pos = pos->next;
-	} else {
-		while (offset++ != 0)
-			pos = pos->prev;
-	}
-
-	self->first_visible_entry = pos;
-}
-
-static void ui_browser__rb_tree_seek(struct ui_browser *self,
-				     off_t offset, int whence)
-{
-	struct rb_root *root = self->entries;
-	struct rb_node *nd;
-
-	switch (whence) {
-	case SEEK_SET:
-		nd = rb_first(root);
-		break;
-	case SEEK_CUR:
-		nd = self->first_visible_entry;
-		break;
-	case SEEK_END:
-		nd = rb_last(root);
-		break;
-	default:
-		return;
-	}
-
-	if (offset > 0) {
-		while (offset-- != 0)
-			nd = rb_next(nd);
-	} else {
-		while (offset++ != 0)
-			nd = rb_prev(nd);
-	}
-
-	self->first_visible_entry = nd;
-}
-
-static unsigned int ui_browser__rb_tree_refresh(struct ui_browser *self)
-{
-	struct rb_node *nd;
-	int row = 0;
-
-	if (self->first_visible_entry == NULL)
-                self->first_visible_entry = rb_first(self->entries);
-
-	nd = self->first_visible_entry;
-
-	while (nd != NULL) {
-		SLsmg_gotorc(self->top + row, self->left);
-		self->write(self, nd, row);
-		if (++row == self->height)
-			break;
-		nd = rb_next(nd);
-	}
-
-	return row;
-}
-
-static bool ui_browser__is_current_entry(struct ui_browser *self, unsigned row)
-{
-	return (self->first_visible_entry_idx + row) == self->index;
-}
-
-static void ui_browser__refresh_dimensions(struct ui_browser *self)
-{
-	int cols, rows;
-	newtGetScreenSize(&cols, &rows);
-
-	if (self->width > cols - 4)
-		self->width = cols - 4;
-	self->height = rows - 5;
-	if (self->height > self->nr_entries)
-		self->height = self->nr_entries;
-	self->top  = (rows - self->height) / 2;
-	self->left = (cols - self->width) / 2;
-}
-
-static void ui_browser__reset_index(struct ui_browser *self)
-{
-	self->index = self->first_visible_entry_idx = 0;
-	self->seek(self, 0, SEEK_SET);
-}
-
-static int ui_browser__show(struct ui_browser *self, const char *title)
-{
-	if (self->form != NULL) {
-		newtFormDestroy(self->form);
-		newtPopWindow();
-	}
-	ui_browser__refresh_dimensions(self);
-	newtCenteredWindow(self->width, self->height, title);
-	self->form = newt_form__new();
-	if (self->form == NULL)
-		return -1;
-
-	self->sb = newtVerticalScrollbar(self->width, 0, self->height,
-					 HE_COLORSET_NORMAL,
-					 HE_COLORSET_SELECTED);
-	if (self->sb == NULL)
-		return -1;
-
-	newtFormAddHotKey(self->form, NEWT_KEY_UP);
-	newtFormAddHotKey(self->form, NEWT_KEY_DOWN);
-	newtFormAddHotKey(self->form, NEWT_KEY_PGUP);
-	newtFormAddHotKey(self->form, NEWT_KEY_PGDN);
-	newtFormAddHotKey(self->form, NEWT_KEY_HOME);
-	newtFormAddHotKey(self->form, NEWT_KEY_END);
-	newtFormAddComponent(self->form, self->sb);
-	return 0;
-}
-
-static int objdump_line__show(struct objdump_line *self, struct list_head *head,
-			      int width, struct hist_entry *he, int len,
-			      bool current_entry)
-{
-	if (self->offset != -1) {
+	if (ol->offset != -1) {
+		struct hist_entry *he = self->priv;
 		struct symbol *sym = he->ms.sym;
+		int len = he->ms.sym->end - he->ms.sym->start;
 		unsigned int hits = 0;
 		double percent = 0.0;
 		int color;
 		struct sym_priv *priv = symbol__priv(sym);
 		struct sym_ext *sym_ext = priv->ext;
 		struct sym_hist *h = priv->hist;
-		s64 offset = self->offset;
-		struct objdump_line *next = objdump__get_next_ip_line(head, self);
+		s64 offset = ol->offset;
+		struct objdump_line *next = objdump__get_next_ip_line(self->entries, ol);
 
 		while (offset < (s64)len &&
 		       (next == NULL || offset < next->offset)) {
@@ -497,104 +338,10 @@ static int objdump_line__show(struct objdump_line *self, struct list_head *head,
 
 	SLsmg_write_char(':');
 	slsmg_write_nstring(" ", 8);
-	if (!*self->line)
+	if (!*ol->line)
 		slsmg_write_nstring(" ", width - 18);
 	else
-		slsmg_write_nstring(self->line, width - 18);
-
-	return 0;
-}
-
-static int ui_browser__refresh(struct ui_browser *self)
-{
-	int row;
-
-	newtScrollbarSet(self->sb, self->index, self->nr_entries - 1);
-	row = self->refresh(self);
-	SLsmg_set_color(HE_COLORSET_NORMAL);
-	SLsmg_fill_region(self->top + row, self->left,
-			  self->height - row, self->width, ' ');
-
-	return 0;
-}
-
-static int ui_browser__run(struct ui_browser *self, struct newtExitStruct *es)
-{
-	if (ui_browser__refresh(self) < 0)
-		return -1;
-
-	while (1) {
-		off_t offset;
-
-		newtFormRun(self->form, es);
-
-		if (es->reason != NEWT_EXIT_HOTKEY)
-			break;
-		if (is_exit_key(es->u.key))
-			return es->u.key;
-		switch (es->u.key) {
-		case NEWT_KEY_DOWN:
-			if (self->index == self->nr_entries - 1)
-				break;
-			++self->index;
-			if (self->index == self->first_visible_entry_idx + self->height) {
-				++self->first_visible_entry_idx;
-				self->seek(self, +1, SEEK_CUR);
-			}
-			break;
-		case NEWT_KEY_UP:
-			if (self->index == 0)
-				break;
-			--self->index;
-			if (self->index < self->first_visible_entry_idx) {
-				--self->first_visible_entry_idx;
-				self->seek(self, -1, SEEK_CUR);
-			}
-			break;
-		case NEWT_KEY_PGDN:
-		case ' ':
-			if (self->first_visible_entry_idx + self->height > self->nr_entries - 1)
-				break;
-
-			offset = self->height;
-			if (self->index + offset > self->nr_entries - 1)
-				offset = self->nr_entries - 1 - self->index;
-			self->index += offset;
-			self->first_visible_entry_idx += offset;
-			self->seek(self, +offset, SEEK_CUR);
-			break;
-		case NEWT_KEY_PGUP:
-			if (self->first_visible_entry_idx == 0)
-				break;
-
-			if (self->first_visible_entry_idx < self->height)
-				offset = self->first_visible_entry_idx;
-			else
-				offset = self->height;
-
-			self->index -= offset;
-			self->first_visible_entry_idx -= offset;
-			self->seek(self, -offset, SEEK_CUR);
-			break;
-		case NEWT_KEY_HOME:
-			ui_browser__reset_index(self);
-			break;
-		case NEWT_KEY_END:
-			offset = self->height - 1;
-			if (offset >= self->nr_entries)
-				offset = self->nr_entries - 1;
-
-			self->index = self->nr_entries - 1;
-			self->first_visible_entry_idx = self->index - offset;
-			self->seek(self, -offset, SEEK_END);
-			break;
-		default:
-			return es->u.key;
-		}
-		if (ui_browser__refresh(self) < 0)
-			return -1;
-	}
-	return 0;
+		slsmg_write_nstring(ol->line, width - 18);
 }
 
 static char *callchain_list__sym_name(struct callchain_list *self,
@@ -607,37 +354,18 @@ static char *callchain_list__sym_name(struct callchain_list *self,
 	return bf;
 }
 
-static unsigned int hist_entry__annotate_browser_refresh(struct ui_browser *self)
-{
-	struct objdump_line *pos;
-	struct list_head *head = self->entries;
-	struct hist_entry *he = self->priv;
-	int row = 0;
-	int len = he->ms.sym->end - he->ms.sym->start;
-
-	if (self->first_visible_entry == NULL || self->first_visible_entry == self->entries)
-                self->first_visible_entry = head->next;
-
-	pos = list_entry(self->first_visible_entry, struct objdump_line, node);
-
-	list_for_each_entry_from(pos, head, node) {
-		bool current_entry = ui_browser__is_current_entry(self, row);
-		SLsmg_gotorc(self->top + row, self->left);
-		objdump_line__show(pos, head, self->width,
-				   he, len, current_entry);
-		if (++row == self->height)
-			break;
-	}
-
-	return row;
-}
-
 int hist_entry__tui_annotate(struct hist_entry *self)
 {
-	struct ui_browser browser;
 	struct newtExitStruct es;
 	struct objdump_line *pos, *n;
 	LIST_HEAD(head);
+	struct ui_browser browser = {
+		.entries = &head,
+		.refresh = ui_browser__list_head_refresh,
+		.seek	 = ui_browser__list_head_seek,
+		.write	 = annotate_browser__write,
+		.priv	 = self,
+	};
 	int ret;
 
 	if (self->ms.sym == NULL)
@@ -653,11 +381,6 @@ int hist_entry__tui_annotate(struct hist_entry *self)
 
 	ui_helpline__push("Press <- or ESC to exit");
 
-	memset(&browser, 0, sizeof(browser));
-	browser.entries	= &head;
-	browser.refresh = hist_entry__annotate_browser_refresh;
-	browser.seek	= ui_browser__list_head_seek;
-	browser.priv = self;
 	list_for_each_entry(pos, &head, node) {
 		size_t line_len = strlen(pos->line);
 		if (browser.width < line_len)
@@ -1094,20 +817,6 @@ int hists__tui_browse_tree(struct rb_root *self, const char *help)
 	return key;
 }
 
-static struct newtPercentTreeColors {
-	const char *topColorFg, *topColorBg;
-	const char *mediumColorFg, *mediumColorBg;
-	const char *normalColorFg, *normalColorBg;
-	const char *selColorFg, *selColorBg;
-	const char *codeColorFg, *codeColorBg;
-} defaultPercentTreeColors = {
-	"red",       "lightgray",
-	"green",     "lightgray",
-	"black",     "lightgray",
-	"lightgray", "magenta",
-	"blue",	     "lightgray",
-};
-
 static void newt_suspend(void *d __used)
 {
 	newtSuspend();
@@ -1117,8 +826,6 @@ static void newt_suspend(void *d __used)
 
 void setup_browser(void)
 {
-	struct newtPercentTreeColors *c = &defaultPercentTreeColors;
-
 	if (!isatty(1) || !use_browser || dump_trace) {
 		use_browser = 0;
 		setup_pager();
@@ -1130,11 +837,7 @@ void setup_browser(void)
 	newtCls();
 	newtSetSuspendCallback(newt_suspend, NULL);
 	ui_helpline__puts(" ");
-	sltt_set_color(HE_COLORSET_TOP, NULL, c->topColorFg, c->topColorBg);
-	sltt_set_color(HE_COLORSET_MEDIUM, NULL, c->mediumColorFg, c->mediumColorBg);
-	sltt_set_color(HE_COLORSET_NORMAL, NULL, c->normalColorFg, c->normalColorBg);
-	sltt_set_color(HE_COLORSET_SELECTED, NULL, c->selColorFg, c->selColorBg);
-	sltt_set_color(HE_COLORSET_CODE, NULL, c->codeColorFg, c->codeColorBg);
+	ui_browser__init();
 }
 
 void exit_browser(bool wait_for_ok)
