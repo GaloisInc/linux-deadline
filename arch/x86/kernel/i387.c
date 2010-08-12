@@ -113,7 +113,7 @@ void __cpuinit fpu_init(void)
 
 #endif	/* CONFIG_X86_32 */
 
-static void fpu_finit(struct fpu *fpu)
+void fpu_finit(struct fpu *fpu)
 {
 #ifdef CONFIG_X86_32
 	if (!HAVE_HWFP) {
@@ -138,6 +138,7 @@ static void fpu_finit(struct fpu *fpu)
 		fp->fos = 0xffff0000u;
 	}
 }
+EXPORT_SYMBOL_GPL(fpu_finit);
 
 /*
  * The _current_ task is using the FPU for the first time

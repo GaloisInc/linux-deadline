@@ -326,6 +326,7 @@ EXPORT_SYMBOL_GPL(round_jiffies_up_relative);
 
 /**
  * set_timer_slack - set the allowed slack for a timer
+ * @timer: the timer to be modified
  * @slack_hz: the amount of time (in jiffies) allowed for rounding
  *
  * Set the amount of time, in jiffies, that a certain timer has
@@ -581,6 +582,19 @@ static void __init_timer(struct timer_list *timer,
 #endif
 	lockdep_init_map(&timer->lockdep_map, name, key, 0);
 }
+
+void setup_deferrable_timer_on_stack_key(struct timer_list *timer,
+					 const char *name,
+					 struct lock_class_key *key,
+					 void (*function)(unsigned long),
+					 unsigned long data)
+{
+	timer->function = function;
+	timer->data = data;
+	init_timer_on_stack_key(timer, name, key);
+	timer_set_deferrable(timer);
+}
+EXPORT_SYMBOL_GPL(setup_deferrable_timer_on_stack_key);
 
 /**
  * init_timer_key - initialize a timer
