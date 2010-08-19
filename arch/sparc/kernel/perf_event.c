@@ -1283,22 +1283,17 @@ void __init init_hw_perf_events(void)
 	register_die_notifier(&perf_event_nmi_notifier);
 }
 
-static inline void callchain_store(struct perf_callchain_entry *entry, u64 ip)
-{
-	if (entry->nr < PERF_MAX_STACK_DEPTH)
-		entry->ip[entry->nr++] = ip;
-}
-
-static void perf_callchain_kernel(struct pt_regs *regs,
-				  struct perf_callchain_entry *entry)
+void perf_callchain_kernel(struct perf_callchain_entry *entry,
+			   struct pt_regs *regs)
 {
 	unsigned long ksp, fp;
 #ifdef CONFIG_FUNCTION_GRAPH_TRACER
 	int graph = 0;
 #endif
 
-	callchain_store(entry, PERF_CONTEXT_KERNEL);
-	callchain_store(entry, regs->tpc);
+	stack_trace_flush();
+
+	perf_callchain_store(entry, regs->tpc);
 
 	ksp = regs->u_regs[UREG_I6];
 	fp = ksp + STACK_BIAS;
@@ -1322,13 +1317,13 @@ static void perf_callchain_kernel(struct pt_regs *regs,
 			pc = sf->callers_pc;
 			fp = (unsigned long)sf->fp + STACK_BIAS;
 		}
-		callchain_store(entry, pc);
+		perf_callchain_store(entry, pc);
 #ifdef CONFIG_FUNCTION_GRAPH_TRACER
 		if ((pc + 8UL) == (unsigned long) &return_to_handler) {
 			int index = current->curr_ret_stack;
 			if (current->ret_stack && index >= graph) {
 				pc = current->ret_stack[index - graph].ret;
-				callchain_store(entry, pc);
+				perf_callchain_store(entry, pc);
 				graph++;
 			}
 		}
@@ -1336,13 +1331,12 @@ static void perf_callchain_kernel(struct pt_regs *regs,
 	} while (entry->nr < PERF_MAX_STACK_DEPTH);
 }
 
-static void perf_callchain_user_64(struct pt_regs *regs,
-				   struct perf_callchain_entry *entry)
+static void perf_callchain_user_64(struct perf_callchain_entry *entry,
+				   struct pt_regs *regs)
 {
 	unsigned long ufp;
 
-	callchain_store(entry, PERF_CONTEXT_USER);
-	callchain_store(entry, regs->tpc);
+	perf_callchain_store(entry, regs->tpc);
 
 	ufp = regs->u_regs[UREG_I6] + STACK_BIAS;
 	do {
@@ -1355,17 +1349,16 @@ static void perf_callchain_user_64(struct pt_regs *regs,
 
 		pc = sf.callers_pc;
 		ufp = (unsigned long)sf.fp + STACK_BIAS;
-		callchain_store(entry, pc);
+		perf_callchain_store(entry, pc);
 	} while (entry->nr < PERF_MAX_STACK_DEPTH);
 }
 
-static void perf_callchain_user_32(struct pt_regs *regs,
-				   struct perf_callchain_entry *entry)
+static void perf_callchain_user_32(struct perf_callchain_entry *entry,
+				   struct pt_regs *regs)
 {
 	unsigned long ufp;
 
-	callchain_store(entry, PERF_CONTEXT_USER);
-	callchain_store(entry, regs->tpc);
+	perf_callchain_store(entry, regs->tpc);
 
 	ufp = regs->u_regs[UREG_I6] & 0xffffffffUL;
 	do {
@@ -1378,34 +1371,16 @@ static void perf_callchain_user_32(struct pt_regs *regs,
 
 		pc = sf.callers_pc;
 		ufp = (unsigned long)sf.fp;
-		callchain_store(entry, pc);
+		perf_callchain_store(entry, pc);
 	} while (entry->nr < PERF_MAX_STACK_DEPTH);
 }
 
-/* Like powerpc we can't get PMU interrupts within the PMU handler,
- * so no need for separate NMI and IRQ chains as on x86.
- */
-static DEFINE_PER_CPU(struct perf_callchain_entry, callchain);
-
-struct perf_callchain_entry *perf_callchain(struct pt_regs *regs)
+void
+perf_callchain_user(struct perf_callchain_entry *entry, struct pt_regs *regs)
 {
-	struct perf_callchain_entry *entry = &__get_cpu_var(callchain);
-
-	entry->nr = 0;
-	if (!user_mode(regs)) {
-		stack_trace_flush();
-		perf_callchain_kernel(regs, entry);
-		if (current->mm)
-			regs = task_pt_regs(current);
-		else
-			regs = NULL;
-	}
-	if (regs) {
-		flushw_user();
-		if (test_thread_flag(TIF_32BIT))
-			perf_callchain_user_32(regs, entry);
-		else
-			perf_callchain_user_64(regs, entry);
-	}
-	return entry;
+	flushw_user();
+	if (test_thread_flag(TIF_32BIT))
+		perf_callchain_user_32(entry, regs);
+	else
+		perf_callchain_user_64(entry, regs);
 }

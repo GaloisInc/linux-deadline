@@ -3001,13 +3001,6 @@ arch_initcall(init_hw_perf_events);
 /*
  * Callchain handling code.
  */
-static inline void
-callchain_store(struct perf_callchain_entry *entry,
-		u64 ip)
-{
-	if (entry->nr < PERF_MAX_STACK_DEPTH)
-		entry->ip[entry->nr++] = ip;
-}
 
 /*
  * The registers we're interested in are at the end of the variable
@@ -3039,7 +3032,7 @@ user_backtrace(struct frame_tail *tail,
 	if (__copy_from_user_inatomic(&buftail, tail, sizeof(buftail)))
 		return NULL;
 
-	callchain_store(entry, buftail.lr);
+	perf_callchain_store(entry, buftail.lr);
 
 	/*
 	 * Frame pointers should strictly progress back up the stack
@@ -3051,16 +3044,11 @@ user_backtrace(struct frame_tail *tail,
 	return buftail.fp - 1;
 }
 
-static void
-perf_callchain_user(struct pt_regs *regs,
-		    struct perf_callchain_entry *entry)
+void
+perf_callchain_user(struct perf_callchain_entry *entry, struct pt_regs *regs)
 {
 	struct frame_tail *tail;
 
-	callchain_store(entry, PERF_CONTEXT_USER);
-
-	if (!user_mode(regs))
-		regs = task_pt_regs(current);
 
 	tail = (struct frame_tail *)regs->ARM_fp - 1;
 
@@ -3078,56 +3066,18 @@ callchain_trace(struct stackframe *fr,
 		void *data)
 {
 	struct perf_callchain_entry *entry = data;
-	callchain_store(entry, fr->pc);
+	perf_callchain_store(entry, fr->pc);
 	return 0;
 }
 
-static void
-perf_callchain_kernel(struct pt_regs *regs,
-		      struct perf_callchain_entry *entry)
+void
+perf_callchain_kernel(struct perf_callchain_entry *entry, struct pt_regs *regs)
 {
 	struct stackframe fr;
 
-	callchain_store(entry, PERF_CONTEXT_KERNEL);
 	fr.fp = regs->ARM_fp;
 	fr.sp = regs->ARM_sp;
 	fr.lr = regs->ARM_lr;
 	fr.pc = regs->ARM_pc;
 	walk_stackframe(&fr, callchain_trace, entry);
-}
-
-static void
-perf_do_callchain(struct pt_regs *regs,
-		  struct perf_callchain_entry *entry)
-{
-	int is_user;
-
-	if (!regs)
-		return;
-
-	is_user = user_mode(regs);
-
-	if (!current || !current->pid)
-		return;
-
-	if (is_user && current->state != TASK_RUNNING)
-		return;
-
-	if (!is_user)
-		perf_callchain_kernel(regs, entry);
-
-	if (current->mm)
-		perf_callchain_user(regs, entry);
-}
-
-static DEFINE_PER_CPU(struct perf_callchain_entry, pmc_irq_entry);
-
-struct perf_callchain_entry *
-perf_callchain(struct pt_regs *regs)
-{
-	struct perf_callchain_entry *entry = &__get_cpu_var(pmc_irq_entry);
-
-	entry->nr = 0;
-	perf_do_callchain(regs, entry);
-	return entry;
 }

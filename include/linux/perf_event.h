@@ -808,6 +808,12 @@ struct perf_event_context {
 	struct rcu_head			rcu_head;
 };
 
+/*
+ * Number of contexts where an event can trigger:
+ * 	task, softirq, hardirq, nmi.
+ */
+#define PERF_NR_CONTEXTS	4
+
 /**
  * struct perf_event_cpu_context - per cpu event context structure
  */
@@ -821,12 +827,8 @@ struct perf_cpu_context {
 	struct mutex			hlist_mutex;
 	int				hlist_refcount;
 
-	/*
-	 * Recursion avoidance:
-	 *
-	 * task, softirq, irq, nmi context
-	 */
-	int				recursion[4];
+	/* Recursion avoidance in each contexts */
+	int				recursion[PERF_NR_CONTEXTS];
 };
 
 struct perf_output_handle {
@@ -976,7 +978,21 @@ extern int perf_unregister_guest_info_callbacks(struct perf_guest_info_callbacks
 extern void perf_event_comm(struct task_struct *tsk);
 extern void perf_event_fork(struct task_struct *tsk);
 
-extern struct perf_callchain_entry *perf_callchain(struct pt_regs *regs);
+/* Callchains */
+DECLARE_PER_CPU(struct perf_callchain_entry, perf_callchain_entry);
+
+extern void perf_callchain_user(struct perf_callchain_entry *entry,
+				struct pt_regs *regs);
+extern void perf_callchain_kernel(struct perf_callchain_entry *entry,
+				  struct pt_regs *regs);
+
+
+static inline void
+perf_callchain_store(struct perf_callchain_entry *entry, u64 ip)
+{
+	if (entry->nr < PERF_MAX_STACK_DEPTH)
+		entry->ip[entry->nr++] = ip;
+}
 
 extern int sysctl_perf_event_paranoid;
 extern int sysctl_perf_event_mlock;
