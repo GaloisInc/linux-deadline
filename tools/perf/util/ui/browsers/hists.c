@@ -195,9 +195,11 @@ static bool hist_browser__toggle_fold(struct hist_browser *self)
 	return false;
 }
 
-static int hist_browser__run(struct hist_browser *self, const char *title,
-			     struct newtExitStruct *es)
+static int hist_browser__run(struct hist_browser *self, const char *title)
 {
+	int key;
+	int exit_keys[] = { 'a', '?', 'h', 'd', 'D', 't', NEWT_KEY_ENTER,
+			    NEWT_KEY_RIGHT, NEWT_KEY_LEFT, 0, };
 	char str[256], unit;
 	unsigned long nr_events = self->hists->stats.nr_events[PERF_RECORD_SAMPLE];
 
@@ -215,23 +217,12 @@ static int hist_browser__run(struct hist_browser *self, const char *title,
 			     "Press '?' for help on key bindings") < 0)
 		return -1;
 
-	newtFormAddHotKey(self->b.form, 'a');
-	newtFormAddHotKey(self->b.form, '?');
-	newtFormAddHotKey(self->b.form, 'h');
-	newtFormAddHotKey(self->b.form, 'd');
-	newtFormAddHotKey(self->b.form, 'D');
-	newtFormAddHotKey(self->b.form, 't');
-
-	newtFormAddHotKey(self->b.form, NEWT_KEY_LEFT);
-	newtFormAddHotKey(self->b.form, NEWT_KEY_RIGHT);
-	newtFormAddHotKey(self->b.form, NEWT_KEY_ENTER);
+	ui_browser__add_exit_keys(&self->b, exit_keys);
 
 	while (1) {
-		ui_browser__run(&self->b, es);
+		key = ui_browser__run(&self->b);
 
-		if (es->reason != NEWT_EXIT_HOTKEY)
-			break;
-		switch (es->u.key) {
+		switch (key) {
 		case 'D': { /* Debug */
 			static int seq;
 			struct hist_entry *h = rb_entry(self->b.top,
@@ -251,12 +242,12 @@ static int hist_browser__run(struct hist_browser *self, const char *title,
 				break;
 			/* fall thru */
 		default:
-			return 0;
+			goto out;
 		}
 	}
-
+out:
 	ui_browser__hide(&self->b);
-	return 0;
+	return key;
 }
 
 static char *callchain_list__sym_name(struct callchain_list *self,
@@ -341,8 +332,8 @@ static int hist_browser__show_callchain_node_rb_tree(struct hist_browser *self,
 				*is_current_entry = true;
 			}
 
-			SLsmg_set_color(color);
-			SLsmg_gotorc(self->b.y + row, self->b.x);
+			ui_browser__set_color(&self->b, color);
+			ui_browser__gotorc(&self->b, row, 0);
 			slsmg_write_nstring(" ", offset + extra_offset);
 			slsmg_printf("%c ", folded_sign);
 			slsmg_write_nstring(str, width);
@@ -405,8 +396,8 @@ static int hist_browser__show_callchain_node(struct hist_browser *self,
 		}
 
 		s = callchain_list__sym_name(chain, ipstr, sizeof(ipstr));
-		SLsmg_gotorc(self->b.y + row, self->b.x);
-		SLsmg_set_color(color);
+		ui_browser__gotorc(&self->b, row, 0);
+		ui_browser__set_color(&self->b, color);
 		slsmg_write_nstring(" ", offset);
 		slsmg_printf("%c ", folded_sign);
 		slsmg_write_nstring(s, width - 2);
@@ -484,8 +475,8 @@ static int hist_browser__show_entry(struct hist_browser *self,
 				color = HE_COLORSET_NORMAL;
 		}
 
-		SLsmg_set_color(color);
-		SLsmg_gotorc(self->b.y + row, self->b.x);
+		ui_browser__set_color(&self->b, color);
+		ui_browser__gotorc(&self->b, row, 0);
 		if (symbol_conf.use_callchain) {
 			slsmg_printf("%c ", folded_sign);
 			width -= 2;
@@ -687,8 +678,6 @@ static struct hist_browser *hist_browser__new(struct hists *hists)
 
 static void hist_browser__delete(struct hist_browser *self)
 {
-	newtFormDestroy(self->b.form);
-	newtPopWindow();
 	free(self);
 }
 
@@ -725,7 +714,6 @@ int hists__browse(struct hists *self, const char *helpline, const char *ev_name)
 	struct pstack *fstack;
 	const struct thread *thread_filter = NULL;
 	const struct dso *dso_filter = NULL;
-	struct newtExitStruct es;
 	char msg[160];
 	int key = -1;
 
@@ -749,70 +737,63 @@ int hists__browse(struct hists *self, const char *helpline, const char *ev_name)
 		    annotate = -2, zoom_dso = -2, zoom_thread = -2,
 		    browse_map = -2;
 
-		if (hist_browser__run(browser, msg, &es))
-			break;
+		key = hist_browser__run(browser, msg);
 
 		thread = hist_browser__selected_thread(browser);
 		dso = browser->selection->map ? browser->selection->map->dso : NULL;
 
-		if (es.reason == NEWT_EXIT_HOTKEY) {
-			key = es.u.key;
-
-			switch (key) {
-			case NEWT_KEY_F1:
-				goto do_help;
-			case NEWT_KEY_TAB:
-			case NEWT_KEY_UNTAB:
-				/*
-				 * Exit the browser, let hists__browser_tree
-				 * go to the next or previous
-				 */
-				goto out_free_stack;
-			default:;
-			}
-
-			switch (key) {
-			case 'a':
-				if (browser->selection->map == NULL &&
-				    browser->selection->map->dso->annotate_warned)
-					continue;
-				goto do_annotate;
-			case 'd':
-				goto zoom_dso;
-			case 't':
-				goto zoom_thread;
-			case 'h':
-			case '?':
+		switch (key) {
+		case NEWT_KEY_F1:
+			goto do_help;
+		case NEWT_KEY_TAB:
+		case NEWT_KEY_UNTAB:
+			/*
+			 * Exit the browser, let hists__browser_tree
+			 * go to the next or previous
+			 */
+			goto out_free_stack;
+		case 'a':
+			if (browser->selection->map == NULL &&
+			    browser->selection->map->dso->annotate_warned)
+				continue;
+			goto do_annotate;
+		case 'd':
+			goto zoom_dso;
+		case 't':
+			goto zoom_thread;
+		case 'h':
+		case '?':
 do_help:
-				ui__help_window("->        Zoom into DSO/Threads & Annotate current symbol\n"
-						"<-        Zoom out\n"
-						"a         Annotate current symbol\n"
-						"h/?/F1    Show this window\n"
-						"d         Zoom into current DSO\n"
-						"t         Zoom into current Thread\n"
-						"q/CTRL+C  Exit browser");
-				continue;
-			default:;
-			}
-			if (is_exit_key(key)) {
-				if (key == NEWT_KEY_ESCAPE &&
-				    !ui__dialog_yesno("Do you really want to exit?"))
-					continue;
-				break;
-			}
+			ui__help_window("->        Zoom into DSO/Threads & Annotate current symbol\n"
+					"<-        Zoom out\n"
+					"a         Annotate current symbol\n"
+					"h/?/F1    Show this window\n"
+					"d         Zoom into current DSO\n"
+					"t         Zoom into current Thread\n"
+					"q/CTRL+C  Exit browser");
+			continue;
+		case NEWT_KEY_ENTER:
+		case NEWT_KEY_RIGHT:
+			/* menu */
+			break;
+		case NEWT_KEY_LEFT: {
+			const void *top;
 
-			if (es.u.key == NEWT_KEY_LEFT) {
-				const void *top;
-
-				if (pstack__empty(fstack))
-					continue;
-				top = pstack__pop(fstack);
-				if (top == &dso_filter)
-					goto zoom_out_dso;
-				if (top == &thread_filter)
-					goto zoom_out_thread;
+			if (pstack__empty(fstack))
 				continue;
-			}
+			top = pstack__pop(fstack);
+			if (top == &dso_filter)
+				goto zoom_out_dso;
+			if (top == &thread_filter)
+				goto zoom_out_thread;
+			continue;
+		}
+		case NEWT_KEY_ESCAPE:
+			if (!ui__dialog_yesno("Do you really want to exit?"))
+				continue;
+			/* Fall thru */
+		default:
+			goto out_free_stack;
 		}
 
 		if (browser->selection->sym != NULL &&
@@ -925,10 +906,6 @@ int hists__tui_browse_tree(struct rb_root *self, const char *help)
 		const char *ev_name = __event_name(hists->type, hists->config);
 
 		key = hists__browse(hists, help, ev_name);
-
-		if (is_exit_key(key))
-			break;
-
 		switch (key) {
 		case NEWT_KEY_TAB:
 			next = rb_next(nd);
@@ -940,7 +917,7 @@ int hists__tui_browse_tree(struct rb_root *self, const char *help)
 				continue;
 			nd = rb_prev(nd);
 		default:
-			break;
+			return key;
 		}
 	}
 

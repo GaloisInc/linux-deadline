@@ -1,6 +1,5 @@
 #include "../libslang.h"
 #include <elf.h>
-#include <newt.h>
 #include <sys/ttydefaults.h>
 #include <ctype.h>
 #include <string.h>
@@ -56,9 +55,8 @@ static void map_browser__write(struct ui_browser *self, void *nd, int row)
 	struct symbol *sym = rb_entry(nd, struct symbol, rb_node);
 	struct map_browser *mb = container_of(self, struct map_browser, b);
 	bool current_entry = ui_browser__is_current_entry(self, row);
-	int color = ui_browser__percent_color(0, current_entry);
 
-	SLsmg_set_color(color);
+	ui_browser__set_percent_color(self, 0, current_entry);
 	slsmg_printf("%*llx %*llx %c ",
 		     mb->addrlen, sym->start, mb->addrlen, sym->end,
 		     sym->binding == STB_GLOBAL ? 'g' :
@@ -98,31 +96,29 @@ static int map_browser__search(struct map_browser *self)
 	return 0;
 }
 
-static int map_browser__run(struct map_browser *self, struct newtExitStruct *es)
+static int map_browser__run(struct map_browser *self)
 {
+	int key;
+
 	if (ui_browser__show(&self->b, self->map->dso->long_name,
 			     "Press <- or ESC to exit, %s / to search",
 			     verbose ? "" : "restart with -v to use") < 0)
 		return -1;
 
-	newtFormAddHotKey(self->b.form, NEWT_KEY_LEFT);
-	newtFormAddHotKey(self->b.form, NEWT_KEY_ENTER);
 	if (verbose)
-		newtFormAddHotKey(self->b.form, '/');
+		ui_browser__add_exit_key(&self->b, '/');
 
 	while (1) {
-		ui_browser__run(&self->b, es);
+		key = ui_browser__run(&self->b);
 
-		if (es->reason != NEWT_EXIT_HOTKEY)
-			break;
-		if (verbose && es->u.key == '/')
+		if (verbose && key == '/')
 			map_browser__search(self);
 		else
 			break;
 	}
 
 	ui_browser__hide(&self->b);
-	return 0;
+	return key;
 }
 
 int map__browse(struct map *self)
@@ -136,7 +132,6 @@ int map__browse(struct map *self)
 		},
 		.map = self,
 	};
-	struct newtExitStruct es;
 	struct rb_node *nd;
 	char tmp[BITS_PER_LONG / 4];
 	u64 maxaddr = 0;
@@ -157,5 +152,5 @@ int map__browse(struct map *self)
 
 	mb.addrlen = snprintf(tmp, sizeof(tmp), "%llx", maxaddr);
 	mb.b.width += mb.addrlen * 2 + 4 + mb.namelen;
-	return map_browser__run(&mb, &es);
+	return map_browser__run(&mb);
 }
