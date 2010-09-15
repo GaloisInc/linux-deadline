@@ -2015,16 +2015,52 @@ alloc_perf_context(struct pmu *pmu, struct task_struct *task)
 	return ctx;
 }
 
+static struct task_struct *
+find_lively_task_by_vpid(pid_t vpid)
+{
+	struct task_struct *task;
+	int err;
+
+	rcu_read_lock();
+	if (!vpid)
+		task = current;
+	else
+		task = find_task_by_vpid(vpid);
+	if (task)
+		get_task_struct(task);
+	rcu_read_unlock();
+
+	if (!task)
+		return ERR_PTR(-ESRCH);
+
+	/*
+	 * Can't attach events to a dying task.
+	 */
+	err = -ESRCH;
+	if (task->flags & PF_EXITING)
+		goto errout;
+
+	/* Reuse ptrace permission checks for now. */
+	err = -EACCES;
+	if (!ptrace_may_access(task, PTRACE_MODE_READ))
+		goto errout;
+
+	return task;
+errout:
+	put_task_struct(task);
+	return ERR_PTR(err);
+
+}
+
 static struct perf_event_context *
-find_get_context(struct pmu *pmu, pid_t pid, int cpu)
+find_get_context(struct pmu *pmu, struct task_struct *task, int cpu)
 {
 	struct perf_event_context *ctx;
 	struct perf_cpu_context *cpuctx;
-	struct task_struct *task;
 	unsigned long flags;
 	int ctxn, err;
 
-	if (pid == -1 && cpu != -1) {
+	if (!task && cpu != -1) {
 		/* Must be root to operate on a CPU event: */
 		if (perf_paranoid_cpu() && !capable(CAP_SYS_ADMIN))
 			return ERR_PTR(-EACCES);
@@ -2046,30 +2082,6 @@ find_get_context(struct pmu *pmu, pid_t pid, int cpu)
 
 		return ctx;
 	}
-
-	rcu_read_lock();
-	if (!pid)
-		task = current;
-	else
-		task = find_task_by_vpid(pid);
-	if (task)
-		get_task_struct(task);
-	rcu_read_unlock();
-
-	if (!task)
-		return ERR_PTR(-ESRCH);
-
-	/*
-	 * Can't attach events to a dying task.
-	 */
-	err = -ESRCH;
-	if (task->flags & PF_EXITING)
-		goto errout;
-
-	/* Reuse ptrace permission checks for now. */
-	err = -EACCES;
-	if (!ptrace_may_access(task, PTRACE_MODE_READ))
-		goto errout;
 
 	err = -EINVAL;
 	ctxn = pmu->task_ctx_nr;
@@ -5510,6 +5522,7 @@ SYSCALL_DEFINE5(perf_event_open,
 	struct perf_event_context *ctx;
 	struct file *event_file = NULL;
 	struct file *group_file = NULL;
+	struct task_struct *task = NULL;
 	struct pmu *pmu;
 	int event_fd;
 	int fput_needed = 0;
@@ -5564,10 +5577,13 @@ SYSCALL_DEFINE5(perf_event_open,
 	if ((pmu->task_ctx_nr == perf_sw_context) && group_leader)
 		pmu = group_leader->pmu;
 
+	if (pid != -1)
+		task = find_lively_task_by_vpid(pid);
+
 	/*
 	 * Get the target context (task or percpu):
 	 */
-	ctx = find_get_context(pmu, pid, cpu);
+	ctx = find_get_context(pmu, task, cpu);
 	if (IS_ERR(ctx)) {
 		err = PTR_ERR(ctx);
 		goto err_group_fd;
@@ -5649,11 +5665,11 @@ err_fd:
  *
  * @attr: attributes of the counter to create
  * @cpu: cpu in which the counter is bound
- * @pid: task to profile
+ * @task: task to profile (NULL for percpu)
  */
 struct perf_event *
 perf_event_create_kernel_counter(struct perf_event_attr *attr, int cpu,
-				 pid_t pid,
+				 struct task_struct *task,
 				 perf_overflow_handler_t overflow_handler)
 {
 	struct perf_event_context *ctx;
@@ -5670,7 +5686,7 @@ perf_event_create_kernel_counter(struct perf_event_attr *attr, int cpu,
 		goto err;
 	}
 
-	ctx = find_get_context(event->pmu, pid, cpu);
+	ctx = find_get_context(event->pmu, task, cpu);
 	if (IS_ERR(ctx)) {
 		err = PTR_ERR(ctx);
 		goto err_free;
