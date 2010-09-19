@@ -1360,6 +1360,7 @@ out:
 
 /* The key must be already stored in q->key. */
 static inline struct futex_hash_bucket *queue_lock(struct futex_q *q)
+	__acquires(&hb->lock)
 {
 	struct futex_hash_bucket *hb;
 
@@ -1373,6 +1374,7 @@ static inline struct futex_hash_bucket *queue_lock(struct futex_q *q)
 
 static inline void
 queue_unlock(struct futex_q *q, struct futex_hash_bucket *hb)
+	__releases(&hb->lock)
 {
 	spin_unlock(&hb->lock);
 	drop_futex_key_refs(&q->key);
@@ -1391,6 +1393,7 @@ queue_unlock(struct futex_q *q, struct futex_hash_bucket *hb)
  * an example).
  */
 static inline void queue_me(struct futex_q *q, struct futex_hash_bucket *hb)
+	__releases(&hb->lock)
 {
 	int prio;
 
@@ -1471,6 +1474,7 @@ retry:
  * and dropped here.
  */
 static void unqueue_me_pi(struct futex_q *q)
+	__releases(q->lock_ptr)
 {
 	WARN_ON(plist_node_empty(&q->list));
 	plist_del(&q->list, &q->list.plist);
@@ -1843,7 +1847,7 @@ retry:
 
 	restart = &current_thread_info()->restart_block;
 	restart->fn = futex_wait_restart;
-	restart->futex.uaddr = (u32 *)uaddr;
+	restart->futex.uaddr = uaddr;
 	restart->futex.val = val;
 	restart->futex.time = abs_time->tv64;
 	restart->futex.bitset = bitset;
@@ -1869,7 +1873,7 @@ out:
 
 static long futex_wait_restart(struct restart_block *restart)
 {
-	u32 __user *uaddr = (u32 __user *)restart->futex.uaddr;
+	u32 __user *uaddr = restart->futex.uaddr;
 	int fshared = 0;
 	ktime_t t, *tp = NULL;
 
@@ -2458,7 +2462,7 @@ retry:
  */
 static inline int fetch_robust_entry(struct robust_list __user **entry,
 				     struct robust_list __user * __user *head,
-				     int *pi)
+				     unsigned int *pi)
 {
 	unsigned long uentry;
 
