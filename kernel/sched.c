@@ -571,7 +571,7 @@ struct rq {
 
 	unsigned long avg_load_per_task;
 
-	u64 rt_avg;
+	u64 dl_avg, rt_avg;
 	u64 age_stamp;
 	u64 idle_stamp;
 	u64 avg_idle;
@@ -1346,8 +1346,15 @@ static void sched_avg_update(struct rq *rq)
 		 */
 		asm("" : "+rm" (rq->age_stamp));
 		rq->age_stamp += period;
+		rq->dl_avg /= 2;
 		rq->rt_avg /= 2;
 	}
+}
+
+static void sched_dl_avg_update(struct rq *rq, u64 dl_delta)
+{
+	rq->dl_avg += dl_delta;
+	sched_avg_update(rq);
 }
 
 static void sched_rt_avg_update(struct rq *rq, u64 rt_delta)
@@ -1361,6 +1368,10 @@ static void resched_task(struct task_struct *p)
 {
 	assert_raw_spin_locked(&task_rq(p)->lock);
 	set_tsk_need_resched(p);
+}
+
+static void sched_dl_avg_update(struct rq *rq, u64 dl_delta)
+{
 }
 
 static void sched_rt_avg_update(struct rq *rq, u64 rt_delta)
