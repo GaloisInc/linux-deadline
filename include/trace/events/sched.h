@@ -304,7 +304,6 @@ DECLARE_EVENT_CLASS(sched_stat_template,
 			(unsigned long long)__entry->delay)
 );
 
-
 /*
  * Tracepoint for accounting wait time (time the task is runnable
  * but not actually running due to scheduler contention).
@@ -360,6 +359,208 @@ TRACE_EVENT(sched_stat_runtime,
 			__entry->comm, __entry->pid,
 			(unsigned long long)__entry->runtime,
 			(unsigned long long)__entry->vruntime)
+);
+
+/*
+ * Tracepoint for task switches involving -deadline tasks:
+ */
+TRACE_EVENT(sched_switch_dl,
+
+	TP_PROTO(u64 clock,
+		 struct task_struct *prev,
+		 struct task_struct *next),
+
+	TP_ARGS(clock, prev, next),
+
+	TP_STRUCT__entry(
+		__array(	char,	prev_comm,	TASK_COMM_LEN	)
+		__field(	pid_t,	prev_pid			)
+		__field(	u64,	clock				)
+		__field(	s64,	prev_rt				)
+		__field(	u64,	prev_dl				)
+		__field(	long,	prev_state			)
+		__array(	char,	next_comm,	TASK_COMM_LEN	)
+		__field(	pid_t,	next_pid			)
+		__field(	s64,	next_rt				)
+		__field(	u64,	next_dl				)
+	),
+
+	TP_fast_assign(
+		memcpy(__entry->next_comm, next->comm, TASK_COMM_LEN);
+		__entry->prev_pid	= prev->pid;
+		__entry->clock		= clock;
+		__entry->prev_rt	= prev->dl.runtime;
+		__entry->prev_dl	= prev->dl.deadline;
+		__entry->prev_state	= __trace_sched_switch_state(prev);
+		memcpy(__entry->prev_comm, prev->comm, TASK_COMM_LEN);
+		__entry->next_pid	= next->pid;
+		__entry->next_rt	= next->dl.runtime;
+		__entry->next_dl	= next->dl.deadline;
+	),
+
+	TP_printk("prev_comm=%s prev_pid=%d prev_rt=%Ld [ns] prev_dl=%Lu [ns] prev_state=%s ==> "
+		  "next_comm=%s next_pid=%d next_rt=%Ld [ns] next_dl=%Lu [ns] clock=%Lu [ns]",
+		  __entry->prev_comm, __entry->prev_pid, (long long)__entry->prev_rt,
+		  (unsigned long long)__entry->prev_dl, __entry->prev_state ?
+		    __print_flags(__entry->prev_state, "|",
+				{ 1, "S"} , { 2, "D" }, { 4, "T" }, { 8, "t" },
+				{ 16, "Z" }, { 32, "X" }, { 64, "x" },
+				{ 128, "W" }) : "R",
+		  __entry->next_comm, __entry->next_pid, (long long)__entry->next_rt,
+		  (unsigned long long)__entry->next_dl, (unsigned long long)__entry->clock)
+);
+
+/*
+ * Tracepoint for starting of the throttling timer of a -deadline task:
+ */
+TRACE_EVENT(sched_start_timer_dl,
+
+	TP_PROTO(struct task_struct *p, u64 clock,
+		 s64 now, s64 act, unsigned long range),
+
+	TP_ARGS(p, clock, now, act, range),
+
+	TP_STRUCT__entry(
+		__array(	char,	comm,	TASK_COMM_LEN	)
+		__field(	pid_t,	pid			)
+		__field(	u64,	clock			)
+		__field(	s64,	now			)
+		__field(	s64,	act			)
+		__field(	unsigned long,	range		)
+	),
+
+	TP_fast_assign(
+		memcpy(__entry->comm, p->comm, TASK_COMM_LEN);
+		__entry->pid		= p->pid;
+		__entry->clock		= clock;
+		__entry->now		= now;
+		__entry->act		= act;
+		__entry->range		= range;
+	),
+
+	TP_printk("comm=%s pid=%d clock=%Lu [ns] now=%Ld [ns] soft=%Ld [ns] range=%lu",
+		  __entry->comm, __entry->pid, (unsigned long long)__entry->clock,
+		  (long long)__entry->now, (long long)__entry->act,
+		  (unsigned long)__entry->range)
+);
+
+/*
+ * Tracepoint for the throttling timer of a -deadline task:
+ */
+TRACE_EVENT(sched_timer_dl,
+
+	TP_PROTO(struct task_struct *p, u64 clock, int on_rq, int running),
+
+	TP_ARGS(p, clock, on_rq, running),
+
+	TP_STRUCT__entry(
+		__array(	char,	comm,	TASK_COMM_LEN	)
+		__field(	pid_t,	pid			)
+		__field(	u64,	clock			)
+		__field(	int,	on_rq			)
+		__field(	int,	running			)
+	),
+
+	TP_fast_assign(
+		memcpy(__entry->comm, p->comm, TASK_COMM_LEN);
+		__entry->pid		= p->pid;
+		__entry->clock		= clock;
+		__entry->on_rq		= on_rq;
+		__entry->running	= running;
+	),
+
+	TP_printk("comm=%s pid=%d clock=%Lu_rq=%d running=%d",
+		  __entry->comm, __entry->pid, (unsigned long long)__entry->clock,
+		  __entry->on_rq, __entry->running)
+);
+
+/*
+ * sched_stat tracepoints for -deadline tasks:
+ */
+DECLARE_EVENT_CLASS(sched_stat_template_dl,
+
+	TP_PROTO(struct task_struct *p, u64 clock, int flags),
+
+	TP_ARGS(p, clock, flags),
+
+	TP_STRUCT__entry(
+		__array(	char,	comm,	TASK_COMM_LEN	)
+		__field(	pid_t,	pid			)
+		__field(	u64,	clock			)
+		__field(	s64,	rt			)
+		__field(	u64,	dl			)
+		__field(	int,	flags			)
+	),
+
+	TP_fast_assign(
+		memcpy(__entry->comm, p->comm, TASK_COMM_LEN);
+		__entry->pid		= p->pid;
+		__entry->clock		= clock;
+		__entry->rt		= p->dl.runtime;
+		__entry->dl		= p->dl.deadline;
+		__entry->flags		= flags;
+	),
+
+	TP_printk("comm=%s pid=%d clock=%Lu [ns] rt=%Ld dl=%Lu [ns] flags=0x%x",
+		  __entry->comm, __entry->pid, (unsigned long long)__entry->clock,
+		  (long long)__entry->rt, (unsigned long long)__entry->dl,
+		  __entry->flags)
+);
+
+/*
+ * Tracepoint for a new instance of a -deadline task:
+ */
+DEFINE_EVENT(sched_stat_template_dl, sched_stat_new_dl,
+	     TP_PROTO(struct task_struct *tsk, u64 clock, int flags),
+	     TP_ARGS(tsk, clock, flags));
+
+/*
+ * Tracepoint for a replenishment of a -deadline task:
+ */
+DEFINE_EVENT(sched_stat_template_dl, sched_stat_repl_dl,
+	     TP_PROTO(struct task_struct *tsk, u64 clock, int flags),
+	     TP_ARGS(tsk, clock, flags));
+
+/*
+ * Tracepoint for parameters recalculation of -deadline tasks:.
+ */
+DEFINE_EVENT(sched_stat_template_dl, sched_stat_updt_dl,
+	     TP_PROTO(struct task_struct *tsk, u64 clock, int flags),
+	     TP_ARGS(tsk, clock, flags));
+
+/*
+ * Tracepoint for accounting stats of -deadline tasks:.
+ */
+TRACE_EVENT(sched_stat_runtime_dl,
+
+	TP_PROTO(struct task_struct *p, u64 clock, u64 last),
+
+	TP_ARGS(p, clock, last),
+
+	TP_STRUCT__entry(
+		__array(	char,	comm,	TASK_COMM_LEN	)
+		__field(	pid_t,	pid			)
+		__field(	u64,	clock			)
+		__field(	u64,	last			)
+		__field(	s64,	rt			)
+		__field(	u64,	dl			)
+		__field(	u64,	start			)
+        ),
+
+	TP_fast_assign(
+		memcpy(__entry->comm, p->comm, TASK_COMM_LEN);
+		__entry->pid		= p->pid;
+		__entry->clock		= clock;
+		__entry->last		= last;
+		__entry->rt		= p->dl.runtime - last;
+		__entry->dl		= p->dl.deadline;
+		__entry->start		= p->se.exec_start;
+	),
+
+	TP_printk("comm=%s pid=%d clock=%Lu [ns] delta_exec=%Lu [ns] rt=%Ld [ns] dl=%Lu [ns] exec_start=%Lu [ns]",
+		  __entry->comm, __entry->pid, (unsigned long long)__entry->clock,
+		  (unsigned long long)__entry->last, (long long)__entry->rt,
+		  (unsigned long long)__entry->dl, (unsigned long long)__entry->start)
 );
 
 /*

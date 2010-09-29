@@ -231,6 +231,9 @@ static inline void setup_new_dl_entity(struct sched_dl_entity *dl_se)
 	dl_se->deadline = rq->clock + dl_se->dl_deadline;
 	dl_se->runtime = dl_se->dl_runtime;
 	dl_se->dl_new = 0;
+#ifdef CONFIG_SCHEDSTATS
+	trace_sched_stat_new_dl(dl_task_of(dl_se), rq->clock, dl_se->flags);
+#endif
 }
 
 /*
@@ -255,6 +258,7 @@ static void replenish_dl_entity(struct sched_dl_entity *dl_se)
 {
 	struct dl_rq *dl_rq = dl_rq_of_se(dl_se);
 	struct rq *rq = rq_of_dl_rq(dl_rq);
+	int reset = 0;
 
 	/*
 	 * We Keep moving the deadline away until we get some
@@ -280,7 +284,11 @@ static void replenish_dl_entity(struct sched_dl_entity *dl_se)
 		WARN_ON_ONCE(1);
 		dl_se->deadline = rq->clock + dl_se->dl_deadline;
 		dl_se->runtime = dl_se->dl_runtime;
+		reset = 1;
 	}
+#ifdef CONFIG_SCHEDSTATS
+	trace_sched_stat_repl_dl(dl_task_of(dl_se), rq->clock, reset);
+#endif
 }
 
 /*
@@ -332,6 +340,7 @@ static void update_dl_entity(struct sched_dl_entity *dl_se)
 {
 	struct dl_rq *dl_rq = dl_rq_of_se(dl_se);
 	struct rq *rq = rq_of_dl_rq(dl_rq);
+	int overflow = 0;
 
 	/*
 	 * The arrival of a new instance needs special treatment, i.e.,
@@ -346,7 +355,11 @@ static void update_dl_entity(struct sched_dl_entity *dl_se)
 	    dl_entity_overflow(dl_se, rq->clock)) {
 		dl_se->deadline = rq->clock + dl_se->dl_deadline;
 		dl_se->runtime = dl_se->dl_runtime;
+		overflow = 1;
 	}
+#ifdef CONFIG_SCHEDSTATS
+	trace_sched_stat_updt_dl(dl_task_of(dl_se), rq->clock, overflow);
+#endif
 }
 
 /*
@@ -394,6 +407,10 @@ static int start_dl_timer(struct sched_dl_entity *dl_se)
 	__hrtimer_start_range_ns(&dl_se->dl_timer, soft,
 				 range, HRTIMER_MODE_ABS, 0);
 
+	trace_sched_start_timer_dl(dl_task_of(dl_se), rq->clock,
+				   ktime_to_ns(now), ktime_to_ns(soft),
+				   range);
+
 	return hrtimer_active(&dl_se->dl_timer);
 }
 
@@ -427,6 +444,8 @@ static enum hrtimer_restart dl_task_timer(struct hrtimer *timer)
 	if (!dl_task(p))
 		goto unlock;
 
+	trace_sched_timer_dl(p, rq->clock, p->se.on_rq, task_current(rq, p));
+
 	dl_se->dl_throttled = 0;
 	if (p->se.on_rq) {
 		enqueue_task_dl(rq, p, ENQUEUE_REPLENISH);
@@ -439,6 +458,7 @@ static enum hrtimer_restart dl_task_timer(struct hrtimer *timer)
 		if (rq->dl.overloaded)
 			push_dl_task(rq);
 	}
+
 unlock:
 	task_rq_unlock(rq, &flags);
 
@@ -529,6 +549,7 @@ static void update_curr_dl(struct rq *rq)
 	curr->se.sum_exec_runtime += delta_exec;
 	schedstat_add(&rq->dl, exec_clock, delta_exec);
 	account_group_exec_runtime(curr, delta_exec);
+	trace_sched_stat_runtime_dl(curr, rq->clock, delta_exec);
 
 	curr->se.exec_start = rq->clock;
 	cpuacct_charge(curr, delta_exec);

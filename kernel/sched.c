@@ -3061,6 +3061,8 @@ context_switch(struct rq *rq, struct task_struct *prev,
 
 	prepare_task_switch(rq, prev, next);
 	trace_sched_switch(prev, next);
+	if (unlikely(dl_task(prev) || dl_task(next)))
+		trace_sched_switch_dl(rq->clock, prev, next);
 	mm = next->mm;
 	oldmm = prev->active_mm;
 	/*
