@@ -2235,6 +2235,9 @@ void set_task_cpu(struct task_struct *p, unsigned int new_cpu)
 #endif
 
 	trace_sched_migrate_task(p, new_cpu);
+	if (unlikely(dl_task(p)))
+		trace_sched_migrate_task_dl(p, task_rq(p)->clock,
+					    new_cpu, cpu_rq(new_cpu)->clock);
 
 	if (task_cpu(p) != new_cpu) {
 		p->se.nr_migrations++;

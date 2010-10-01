@@ -475,6 +475,115 @@ TRACE_EVENT(sched_timer_dl,
 );
 
 /*
+ *
+ */
+TRACE_EVENT(sched_push_task_dl,
+
+	TP_PROTO(struct task_struct *n, u64 clock, int later_cpu),
+
+	TP_ARGS(n, clock, later_cpu),
+
+	TP_STRUCT__entry(
+		__array(	char,	comm,	TASK_COMM_LEN	)
+		__field(	pid_t,	pid			)
+		__field(	u64,	clock			)
+		__field(	s64,	rt			)
+		__field(	u64,	dl			)
+		__field(	int,	cpu			)
+		__field(	int,	later_cpu		)
+	),
+
+	TP_fast_assign(
+		memcpy(__entry->comm, n->comm, TASK_COMM_LEN);
+		__entry->pid		= n->pid;
+		__entry->clock		= clock;
+		__entry->rt		= n->dl.runtime;
+		__entry->dl		= n->dl.deadline;
+		__entry->cpu		= task_cpu(n);
+		__entry->later_cpu	= later_cpu;
+	),
+
+	TP_printk("comm=%s pid=%d rt=%Ld [ns] dl=%Lu [ns] clock=%Lu [ns] cpu=%d later_cpu=%d",
+		  __entry->comm, __entry->pid, (long long)__entry->rt,
+		  (unsigned long long)__entry->dl, (unsigned long long)__entry->clock,
+		  __entry->cpu, __entry->later_cpu)
+);
+
+/*
+ *
+ */
+TRACE_EVENT(sched_pull_task_dl,
+
+	TP_PROTO(struct task_struct *p, u64 clock, int src_cpu),
+
+	TP_ARGS(p, clock, src_cpu),
+
+	TP_STRUCT__entry(
+		__array(	char,	comm,	TASK_COMM_LEN	)
+		__field(	pid_t,	pid			)
+		__field(	u64,	clock			)
+		__field(	s64,	rt			)
+		__field(	u64,	dl			)
+		__field(	int,	cpu			)
+		__field(	int,	src_cpu			)
+	),
+
+	TP_fast_assign(
+		memcpy(__entry->comm, p->comm, TASK_COMM_LEN);
+		__entry->pid		= p->pid;
+		__entry->clock		= clock;
+		__entry->rt		= p->dl.runtime;
+		__entry->dl		= p->dl.deadline;
+		__entry->cpu		= task_cpu(p);
+		__entry->src_cpu	= src_cpu;
+	),
+
+	TP_printk("comm=%s pid=%d rt=%Ld [ns] dl=%Lu [ns] clock=%Lu [ns] cpu=%d later_cpu=%d",
+		  __entry->comm, __entry->pid, (long long)__entry->rt,
+		  (unsigned long long)__entry->dl, (unsigned long long)__entry->clock,
+		  __entry->cpu, __entry->src_cpu)
+);
+
+/*
+ * Tracepoint for migrations involving -deadline tasks:
+ */
+TRACE_EVENT(sched_migrate_task_dl,
+
+	TP_PROTO(struct task_struct *p, u64 clock, int dest_cpu, u64 dclock),
+
+	TP_ARGS(p, clock, dest_cpu, dclock),
+
+	TP_STRUCT__entry(
+		__array(	char,	comm,	TASK_COMM_LEN	)
+		__field(	pid_t,	pid			)
+		__field(	u64,	clock			)
+		__field(	s64,	rt			)
+		__field(	u64,	dl			)
+		__field(	int,	orig_cpu		)
+		__field(	int,	dest_cpu		)
+		__field(	u64,	dclock			)
+	),
+
+	TP_fast_assign(
+		memcpy(__entry->comm, p->comm, TASK_COMM_LEN);
+		__entry->pid		= p->pid;
+		__entry->clock		= clock;
+		__entry->rt		= p->dl.runtime;
+		__entry->dl		= p->dl.deadline;
+		__entry->orig_cpu	= task_cpu(p);
+		__entry->dest_cpu	= dest_cpu;
+		__entry->dclock		= dclock;
+	),
+
+	TP_printk("comm=%s pid=%d rt=%Ld [ns] dl=%Lu [ns] orig_cpu=%d orig_clock=%Lu [ns] "
+		  "dest_cpu=%d dest_clock=%Lu [ns]",
+		  __entry->comm, __entry->pid, (long long)__entry->rt,
+		  (unsigned long long)__entry->dl, __entry->orig_cpu,
+		  (unsigned long long)__entry->clock, __entry->dest_cpu,
+		  (unsigned long long)__entry->dclock)
+);
+
+/*
  * sched_stat tracepoints for -deadline tasks:
  */
 DECLARE_EVENT_CLASS(sched_stat_template_dl,

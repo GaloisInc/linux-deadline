@@ -1294,6 +1294,10 @@ retry:
 
 	/* Will lock the rq it'll find */
 	later_rq = find_lock_later_rq(next_task, rq);
+
+	trace_sched_push_task_dl(next_task, rq->clock,
+				 later_rq ? later_rq->cpu : -1);
+
 	if (!later_rq) {
 		struct task_struct *task;
 
@@ -1378,6 +1382,9 @@ static int pull_dl_task(struct rq *this_rq)
 			goto skip;
 
 		p = pick_next_earliest_dl_task(src_rq, this_cpu);
+		if (p)
+			trace_sched_pull_task_dl(p, this_rq->clock,
+						 src_rq->cpu);
 
 		/*
 		 * We found a task to be pulled if:
