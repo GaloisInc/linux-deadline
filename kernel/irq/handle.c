@@ -75,12 +75,10 @@ EXPORT_SYMBOL_GPL(nr_irqs);
 #ifdef CONFIG_SPARSE_IRQ
 
 static struct irq_desc irq_desc_init = {
-	.irq	    = -1,
-	.status	    = IRQ_DISABLED,
-	.chip	    = &no_irq_chip,
-	.handle_irq = handle_bad_irq,
-	.depth      = 1,
-	.lock       = __RAW_SPIN_LOCK_UNLOCKED(irq_desc_init.lock),
+	.status		= IRQ_DISABLED,
+	.handle_irq	= handle_bad_irq,
+	.depth		= 1,
+	.lock		= __RAW_SPIN_LOCK_UNLOCKED(irq_desc_init.lock),
 };
 
 void __ref init_kstat_irqs(struct irq_desc *desc, int node, int nr)
@@ -105,9 +103,9 @@ static void init_one_irq_desc(int irq, struct irq_desc *desc, int node)
 	memcpy(desc, &irq_desc_init, sizeof(struct irq_desc));
 
 	raw_spin_lock_init(&desc->lock);
-	desc->irq = irq;
+	desc->irq_data.irq = irq;
 #ifdef CONFIG_SMP
-	desc->node = node;
+	desc->irq_data.node = node;
 #endif
 	lockdep_set_class(&desc->lock, &irq_desc_lock_class);
 	init_kstat_irqs(desc, node, nr_cpu_ids);
@@ -151,12 +149,10 @@ void replace_irq_desc(unsigned int irq, struct irq_desc *desc)
 
 static struct irq_desc irq_desc_legacy[NR_IRQS_LEGACY] __cacheline_aligned_in_smp = {
 	[0 ... NR_IRQS_LEGACY-1] = {
-		.irq	    = -1,
-		.status	    = IRQ_DISABLED,
-		.chip	    = &no_irq_chip,
-		.handle_irq = handle_bad_irq,
-		.depth	    = 1,
-		.lock	    = __RAW_SPIN_LOCK_UNLOCKED(irq_desc_init.lock),
+		.status		= IRQ_DISABLED,
+		.handle_irq	= handle_bad_irq,
+		.depth		= 1,
+		.lock		= __RAW_SPIN_LOCK_UNLOCKED(irq_desc_init.lock),
 	}
 };
 
@@ -183,10 +179,13 @@ int __init early_irq_init(void)
 	kstat_irqs_legacy = kzalloc_node(NR_IRQS_LEGACY * nr_cpu_ids *
 					  sizeof(int), GFP_NOWAIT, node);
 
+	irq_desc_init.irq_data.chip = &no_irq_chip;
+
 	for (i = 0; i < legacy_count; i++) {
-		desc[i].irq = i;
+		desc[i].irq_data.irq = i;
+		desc[i].irq_data.chip = &no_irq_chip;
 #ifdef CONFIG_SMP
-		desc[i].node = node;
+		desc[i].irq_data.node = node;
 #endif
 		desc[i].kstat_irqs = kstat_irqs_legacy + i * nr_cpu_ids;
 		lockdep_set_class(&desc[i].lock, &irq_desc_lock_class);
@@ -241,11 +240,10 @@ out_unlock:
 
 struct irq_desc irq_desc[NR_IRQS] __cacheline_aligned_in_smp = {
 	[0 ... NR_IRQS-1] = {
-		.status = IRQ_DISABLED,
-		.chip = &no_irq_chip,
-		.handle_irq = handle_bad_irq,
-		.depth = 1,
-		.lock = __RAW_SPIN_LOCK_UNLOCKED(irq_desc->lock),
+		.status		= IRQ_DISABLED,
+		.handle_irq	= handle_bad_irq,
+		.depth		= 1,
+		.lock		= __RAW_SPIN_LOCK_UNLOCKED(irq_desc->lock),
 	}
 };
 
@@ -264,7 +262,8 @@ int __init early_irq_init(void)
 	count = ARRAY_SIZE(irq_desc);
 
 	for (i = 0; i < count; i++) {
-		desc[i].irq = i;
+		desc[i].irq_data.irq = i;
+		desc[i].irq_data.chip = &no_irq_chip;
 		alloc_desc_masks(&desc[i], 0, true);
 		init_desc_masks(&desc[i]);
 		desc[i].kstat_irqs = kstat_irqs_all[i];
@@ -292,37 +291,42 @@ void clear_kstat_irqs(struct irq_desc *desc)
  * What should we do if we get a hw irq event on an illegal vector?
  * Each architecture has to answer this themself.
  */
-static void ack_bad(unsigned int irq)
+static void ack_bad(struct irq_data *data)
 {
-	struct irq_desc *desc = irq_to_desc(irq);
+	struct irq_desc *desc = irq_data_to_desc(data);
 
-	print_irq_desc(irq, desc);
-	ack_bad_irq(irq);
+	print_irq_desc(data->irq, desc);
+	ack_bad_irq(data->irq);
 }
 
 /*
  * NOP functions
  */
-static void noop(unsigned int irq)
-{
-}
+static void noop(struct irq_data *data) { }
 
-static unsigned int noop_ret(unsigned int irq)
+static unsigned int noop_ret(struct irq_data *data)
 {
 	return 0;
 }
+
+#ifndef CONFIG_GENERIC_HARDIRQS_NO_DEPRECATED
+static void compat_noop(unsigned int irq) { }
+#define END_INIT .end = compat_noop
+#else
+#define END_INIT
+#endif
 
 /*
  * Generic no controller implementation
  */
 struct irq_chip no_irq_chip = {
 	.name		= "none",
-	.startup	= noop_ret,
-	.shutdown	= noop,
-	.enable		= noop,
-	.disable	= noop,
-	.ack		= ack_bad,
-	.end		= noop,
+	.irq_startup	= noop_ret,
+	.irq_shutdown	= noop,
+	.irq_enable	= noop,
+	.irq_disable	= noop,
+	.irq_ack	= ack_bad,
+	END_INIT
 };
 
 /*
@@ -331,14 +335,14 @@ struct irq_chip no_irq_chip = {
  */
 struct irq_chip dummy_irq_chip = {
 	.name		= "dummy",
-	.startup	= noop_ret,
-	.shutdown	= noop,
-	.enable		= noop,
-	.disable	= noop,
-	.ack		= noop,
-	.mask		= noop,
-	.unmask		= noop,
-	.end		= noop,
+	.irq_startup	= noop_ret,
+	.irq_shutdown	= noop,
+	.irq_enable	= noop,
+	.irq_disable	= noop,
+	.irq_ack	= noop,
+	.irq_mask	= noop,
+	.irq_unmask	= noop,
+	END_INIT
 };
 
 /*
@@ -457,20 +461,20 @@ unsigned int __do_IRQ(unsigned int irq)
 		/*
 		 * No locking required for CPU-local interrupts:
 		 */
-		if (desc->chip->ack)
-			desc->chip->ack(irq);
+		if (desc->irq_data.chip->ack)
+			desc->irq_data.chip->ack(irq);
 		if (likely(!(desc->status & IRQ_DISABLED))) {
 			action_ret = handle_IRQ_event(irq, desc->action);
 			if (!noirqdebug)
 				note_interrupt(irq, desc, action_ret);
 		}
-		desc->chip->end(irq);
+		desc->irq_data.chip->end(irq);
 		return 1;
 	}
 
 	raw_spin_lock(&desc->lock);
-	if (desc->chip->ack)
-		desc->chip->ack(irq);
+	if (desc->irq_data.chip->ack)
+		desc->irq_data.chip->ack(irq);
 	/*
 	 * REPLAY is when Linux resends an IRQ that was dropped earlier
 	 * WAITING is used by probe to mark irqs that are being tested
@@ -530,7 +534,7 @@ out:
 	 * The ->end() handler has to deal with interrupts which got
 	 * disabled while the handler was running.
 	 */
-	desc->chip->end(irq);
+	desc->irq_data.chip->end(irq);
 	raw_spin_unlock(&desc->lock);
 
 	return 1;

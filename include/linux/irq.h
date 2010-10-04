@@ -84,31 +84,78 @@ struct proc_dir_entry;
 struct msi_desc;
 
 /**
+ * struct irq_data - per irq and irq chip data passed down to chip functions
+ * @irq:		interrupt number
+ * @node:		node index useful for balancing
+ * @chip:		low level interrupt hardware access
+ * @handler_data:	per-IRQ data for the irq_chip methods
+ * @chip_data:		platform-specific per-chip private data for the chip
+ *			methods, to allow shared chip implementations
+ * @msi_desc:		MSI descriptor
+ * @affinity:		IRQ affinity on SMP
+ * @irq_2_iommu:	iommu with this irq
+ *
+ * The fields here need to overlay the ones in irq_desc until we
+ * cleaned up the direct references and switched everything over to
+ * irq_data.
+ */
+struct irq_data {
+	unsigned int		irq;
+	unsigned int		node;
+	struct irq_chip		*chip;
+	void			*handler_data;
+	void			*chip_data;
+	struct msi_desc		*msi_desc;
+#ifdef CONFIG_SMP
+	cpumask_var_t		affinity;
+#endif
+#ifdef CONFIG_INTR_REMAP
+	struct irq_2_iommu      *irq_2_iommu;
+#endif
+};
+
+/**
  * struct irq_chip - hardware interrupt chip descriptor
  *
  * @name:		name for /proc/interrupts
- * @startup:		start up the interrupt (defaults to ->enable if NULL)
- * @shutdown:		shut down the interrupt (defaults to ->disable if NULL)
- * @enable:		enable the interrupt (defaults to chip->unmask if NULL)
- * @disable:		disable the interrupt
- * @ack:		start of a new interrupt
- * @mask:		mask an interrupt source
- * @mask_ack:		ack and mask an interrupt source
- * @unmask:		unmask an interrupt source
- * @eoi:		end of interrupt - chip level
- * @end:		end of interrupt - flow level
- * @set_affinity:	set the CPU affinity on SMP machines
- * @retrigger:		resend an IRQ to the CPU
- * @set_type:		set the flow type (IRQ_TYPE_LEVEL/etc.) of an IRQ
- * @set_wake:		enable/disable power-management wake-on of an IRQ
+ * @startup:		deprecated, replaced by irq_startup
+ * @shutdown:		deprecated, replaced by irq_shutdown
+ * @enable:		deprecated, replaced by irq_enable
+ * @disable:		deprecated, replaced by irq_disable
+ * @ack:		deprecated, replaced by irq_ack
+ * @mask:		deprecated, replaced by irq_mask
+ * @mask_ack:		deprecated, replaced by irq_mask_ack
+ * @unmask:		deprecated, replaced by irq_unmask
+ * @eoi:		deprecated, replaced by irq_eoi
+ * @end:		deprecated, will go away with __do_IRQ()
+ * @set_affinity:	deprecated, replaced by irq_set_affinity
+ * @retrigger:		deprecated, replaced by irq_retrigger
+ * @set_type:		deprecated, replaced by irq_set_type
+ * @set_wake:		deprecated, replaced by irq_wake
+ * @bus_lock:		deprecated, replaced by irq_bus_lock
+ * @bus_sync_unlock:	deprecated, replaced by irq_bus_sync_unlock
  *
- * @bus_lock:		function to lock access to slow bus (i2c) chips
- * @bus_sync_unlock:	function to sync and unlock slow bus (i2c) chips
+ * @irq_startup:	start up the interrupt (defaults to ->enable if NULL)
+ * @irq_shutdown:	shut down the interrupt (defaults to ->disable if NULL)
+ * @irq_enable:		enable the interrupt (defaults to chip->unmask if NULL)
+ * @irq_disable:	disable the interrupt
+ * @irq_ack:		start of a new interrupt
+ * @irq_mask:		mask an interrupt source
+ * @irq_mask_ack:	ack and mask an interrupt source
+ * @irq_unmask:		unmask an interrupt source
+ * @irq_eoi:		end of interrupt
+ * @irq_set_affinity:	set the CPU affinity on SMP machines
+ * @irq_retrigger:	resend an IRQ to the CPU
+ * @irq_set_type:	set the flow type (IRQ_TYPE_LEVEL/etc.) of an IRQ
+ * @irq_set_wake:	enable/disable power-management wake-on of an IRQ
+ * @irq_bus_lock:	function to lock access to slow bus (i2c) chips
+ * @irq_bus_sync_unlock:function to sync and unlock slow bus (i2c) chips
  *
  * @release:		release function solely used by UML
  */
 struct irq_chip {
 	const char	*name;
+#ifndef CONFIG_GENERIC_HARDIRQS_NO_DEPRECATED
 	unsigned int	(*startup)(unsigned int irq);
 	void		(*shutdown)(unsigned int irq);
 	void		(*enable)(unsigned int irq);
@@ -129,6 +176,25 @@ struct irq_chip {
 
 	void		(*bus_lock)(unsigned int irq);
 	void		(*bus_sync_unlock)(unsigned int irq);
+#endif
+	unsigned int	(*irq_startup)(struct irq_data *data);
+	void		(*irq_shutdown)(struct irq_data *data);
+	void		(*irq_enable)(struct irq_data *data);
+	void		(*irq_disable)(struct irq_data *data);
+
+	void		(*irq_ack)(struct irq_data *data);
+	void		(*irq_mask)(struct irq_data *data);
+	void		(*irq_mask_ack)(struct irq_data *data);
+	void		(*irq_unmask)(struct irq_data *data);
+	void		(*irq_eoi)(struct irq_data *data);
+
+	int		(*irq_set_affinity)(struct irq_data *data, const struct cpumask *dest, bool force);
+	int		(*irq_retrigger)(struct irq_data *data);
+	int		(*irq_set_type)(struct irq_data *data, unsigned int flow_type);
+	int		(*irq_set_wake)(struct irq_data *data, unsigned int on);
+
+	void		(*irq_bus_lock)(struct irq_data *data);
+	void		(*irq_bus_sync_unlock)(struct irq_data *data);
 
 	/* Currently used only by UML, might disappear one day.*/
 #ifdef CONFIG_IRQ_RELEASE_METHOD
@@ -140,16 +206,10 @@ struct timer_rand_state;
 struct irq_2_iommu;
 /**
  * struct irq_desc - interrupt descriptor
- * @irq:		interrupt number for this descriptor
+ * @irq_data:		per irq and chip data passed down to chip functions
  * @timer_rand_state:	pointer to timer rand state struct
  * @kstat_irqs:		irq stats per cpu
- * @irq_2_iommu:	iommu with this irq
  * @handle_irq:		highlevel irq-events handler [if NULL, __do_IRQ()]
- * @chip:		low level interrupt hardware access
- * @msi_desc:		MSI descriptor
- * @handler_data:	per-IRQ data for the irq_chip methods
- * @chip_data:		platform-specific per-chip private data for the chip
- *			methods, to allow shared chip implementations
  * @action:		the irq action chain
  * @status:		status information
  * @depth:		disable-depth, for nested irq_disable() calls
@@ -158,8 +218,6 @@ struct irq_2_iommu;
  * @last_unhandled:	aging timer for unhandled count
  * @irqs_unhandled:	stats field for spurious unhandled interrupts
  * @lock:		locking for SMP
- * @affinity:		IRQ affinity on SMP
- * @node:		node index useful for balancing
  * @pending_mask:	pending rebalanced interrupts
  * @threads_active:	number of irqaction threads currently running
  * @wait_for_threads:	wait queue for sync_irq to wait for threaded handlers
@@ -167,17 +225,37 @@ struct irq_2_iommu;
  * @name:		flow handler name for /proc/interrupts output
  */
 struct irq_desc {
-	unsigned int		irq;
+
+#ifdef CONFIG_GENERIC_HARDIRQS_NO_DEPRECATED
+	struct irq_data		irq_data;
+#else
+	/*
+	 * This union will go away, once we fixed the direct access to
+	 * irq_desc all over the place. The direct fields are a 1:1
+	 * overlay of irq_data.
+	 */
+	union {
+		struct irq_data		irq_data;
+		struct {
+			unsigned int		irq;
+			unsigned int		node;
+			struct irq_chip		*chip;
+			void			*handler_data;
+			void			*chip_data;
+			struct msi_desc		*msi_desc;
+#ifdef CONFIG_SMP
+			cpumask_var_t		affinity;
+#endif
+#ifdef CONFIG_INTR_REMAP
+			struct irq_2_iommu      *irq_2_iommu;
+#endif
+		};
+	};
+#endif
+
 	struct timer_rand_state *timer_rand_state;
 	unsigned int            *kstat_irqs;
-#ifdef CONFIG_INTR_REMAP
-	struct irq_2_iommu      *irq_2_iommu;
-#endif
 	irq_flow_handler_t	handle_irq;
-	struct irq_chip		*chip;
-	struct msi_desc		*msi_desc;
-	void			*handler_data;
-	void			*chip_data;
 	struct irqaction	*action;	/* IRQ action list */
 	unsigned int		status;		/* IRQ status */
 
@@ -188,9 +266,7 @@ struct irq_desc {
 	unsigned int		irqs_unhandled;
 	raw_spinlock_t		lock;
 #ifdef CONFIG_SMP
-	cpumask_var_t		affinity;
 	const struct cpumask	*affinity_hint;
-	unsigned int		node;
 #ifdef CONFIG_GENERIC_PENDING_IRQ
 	cpumask_var_t		pending_mask;
 #endif
@@ -406,15 +482,15 @@ extern int set_irq_chip_data(unsigned int irq, void *data);
 extern int set_irq_type(unsigned int irq, unsigned int type);
 extern int set_irq_msi(unsigned int irq, struct msi_desc *entry);
 
-#define get_irq_chip(irq)	(irq_to_desc(irq)->chip)
-#define get_irq_chip_data(irq)	(irq_to_desc(irq)->chip_data)
-#define get_irq_data(irq)	(irq_to_desc(irq)->handler_data)
-#define get_irq_msi(irq)	(irq_to_desc(irq)->msi_desc)
+#define get_irq_chip(irq)	(irq_to_desc(irq)->irq_data.chip)
+#define get_irq_chip_data(irq)	(irq_to_desc(irq)->irq_data.chip_data)
+#define get_irq_data(irq)	(irq_to_desc(irq)->irq_data.handler_data)
+#define get_irq_msi(irq)	(irq_to_desc(irq)->irq_data.msi_desc)
 
-#define get_irq_desc_chip(desc)		((desc)->chip)
-#define get_irq_desc_chip_data(desc)	((desc)->chip_data)
-#define get_irq_desc_data(desc)		((desc)->handler_data)
-#define get_irq_desc_msi(desc)		((desc)->msi_desc)
+#define get_irq_desc_chip(desc)		((desc)->irq_data.chip)
+#define get_irq_desc_chip_data(desc)	((desc)->irq_data.chip_data)
+#define get_irq_desc_data(desc)		((desc)->irq_data.handler_data)
+#define get_irq_desc_msi(desc)		((desc)->irq_data.msi_desc)
 
 #endif /* CONFIG_GENERIC_HARDIRQS */
 
@@ -439,12 +515,12 @@ static inline bool alloc_desc_masks(struct irq_desc *desc, int node,
 	if (boot)
 		gfp = GFP_NOWAIT;
 
-	if (!alloc_cpumask_var_node(&desc->affinity, gfp, node))
+	if (!alloc_cpumask_var_node(&desc->irq_data.affinity, gfp, node))
 		return false;
 
 #ifdef CONFIG_GENERIC_PENDING_IRQ
 	if (!alloc_cpumask_var_node(&desc->pending_mask, gfp, node)) {
-		free_cpumask_var(desc->affinity);
+		free_cpumask_var(desc->irq_data.affinity);
 		return false;
 	}
 #endif
@@ -454,7 +530,7 @@ static inline bool alloc_desc_masks(struct irq_desc *desc, int node,
 
 static inline void init_desc_masks(struct irq_desc *desc)
 {
-	cpumask_setall(desc->affinity);
+	cpumask_setall(desc->irq_data.affinity);
 #ifdef CONFIG_GENERIC_PENDING_IRQ
 	cpumask_clear(desc->pending_mask);
 #endif
@@ -474,7 +550,7 @@ static inline void init_copy_desc_masks(struct irq_desc *old_desc,
 					struct irq_desc *new_desc)
 {
 #ifdef CONFIG_CPUMASK_OFFSTACK
-	cpumask_copy(new_desc->affinity, old_desc->affinity);
+	cpumask_copy(new_desc->irq_data.affinity, old_desc->irq_data.affinity);
 
 #ifdef CONFIG_GENERIC_PENDING_IRQ
 	cpumask_copy(new_desc->pending_mask, old_desc->pending_mask);
@@ -485,7 +561,7 @@ static inline void init_copy_desc_masks(struct irq_desc *old_desc,
 static inline void free_desc_masks(struct irq_desc *old_desc,
 				   struct irq_desc *new_desc)
 {
-	free_cpumask_var(old_desc->affinity);
+	free_cpumask_var(old_desc->irq_data.affinity);
 
 #ifdef CONFIG_GENERIC_PENDING_IRQ
 	free_cpumask_var(old_desc->pending_mask);
