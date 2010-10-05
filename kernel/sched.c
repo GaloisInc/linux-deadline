@@ -2708,6 +2708,7 @@ static void __sched_fork(struct task_struct *p)
 	hrtimer_init(&p->dl.dl_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 	p->dl.dl_runtime = p->dl.runtime = 0;
 	p->dl.dl_deadline = p->dl.deadline = 0;
+	p->dl.dl_period = 0;
 	p->dl.flags = 0;
 
 	INIT_LIST_HEAD(&p->rt.run_list);
@@ -4789,6 +4790,10 @@ __setparam_dl(struct task_struct *p, const struct sched_param_ex *param_ex)
 	init_dl_task_timer(dl_se);
 	dl_se->dl_runtime = timespec_to_ns(&param_ex->sched_runtime);
 	dl_se->dl_deadline = timespec_to_ns(&param_ex->sched_deadline);
+	if (timespec_to_ns(&param_ex->sched_period) != 0)
+		dl_se->dl_period = timespec_to_ns(&param_ex->sched_period);
+	else
+		dl_se->dl_period = dl_se->dl_deadline;
 	dl_se->flags = param_ex->sched_flags;
 	dl_se->dl_throttled = 0;
 	dl_se->dl_new = 1;
@@ -4802,6 +4807,7 @@ __getparam_dl(struct task_struct *p, struct sched_param_ex *param_ex)
 	param_ex->sched_priority = p->rt_priority;
 	param_ex->sched_runtime = ns_to_timespec(dl_se->dl_runtime);
 	param_ex->sched_deadline = ns_to_timespec(dl_se->dl_deadline);
+	param_ex->sched_period = ns_to_timespec(dl_se->dl_period);
 	param_ex->sched_flags = dl_se->flags;
 	param_ex->curr_runtime = ns_to_timespec(dl_se->runtime);
 	param_ex->curr_deadline = ns_to_timespec(dl_se->deadline);
@@ -4810,7 +4816,8 @@ __getparam_dl(struct task_struct *p, struct sched_param_ex *param_ex)
 /*
  * This function validates the new parameters of a -deadline task.
  * We ask for the deadline not being zero, and greater or equal
- * than the runtime.
+ * than the runtime, as well as the period of being zero or
+ * not greater than deadline.
  */
 static bool
 __checkparam_dl(const struct sched_param_ex *prm, bool kthread)
@@ -4822,6 +4829,9 @@ __checkparam_dl(const struct sched_param_ex *prm, bool kthread)
 		return kthread;
 
 	return timespec_to_ns(&prm->sched_deadline) != 0 &&
+	       (timespec_to_ns(&prm->sched_period) == 0 ||
+		timespec_compare(&prm->sched_period,
+				 &prm->sched_deadline) >= 0) &&
 	       timespec_compare(&prm->sched_deadline,
 				&prm->sched_runtime) >= 0;
 }
