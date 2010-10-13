@@ -18,108 +18,6 @@
 
 #include "internals.h"
 
-static void dynamic_irq_init_x(unsigned int irq, bool keep_chip_data)
-{
-	struct irq_desc *desc;
-	unsigned long flags;
-
-	desc = irq_to_desc(irq);
-	if (!desc) {
-		WARN(1, KERN_ERR "Trying to initialize invalid IRQ%d\n", irq);
-		return;
-	}
-
-	/* Ensure we don't have left over values from a previous use of this irq */
-	raw_spin_lock_irqsave(&desc->lock, flags);
-	desc->status = IRQ_DISABLED;
-	desc->irq_data.chip = &no_irq_chip;
-	desc->handle_irq = handle_bad_irq;
-	desc->depth = 1;
-	desc->irq_data.msi_desc = NULL;
-	desc->irq_data.handler_data = NULL;
-	if (!keep_chip_data)
-		desc->irq_data.chip_data = NULL;
-	desc->action = NULL;
-	desc->irq_count = 0;
-	desc->irqs_unhandled = 0;
-#ifdef CONFIG_SMP
-	cpumask_setall(desc->irq_data.affinity);
-#ifdef CONFIG_GENERIC_PENDING_IRQ
-	cpumask_clear(desc->pending_mask);
-#endif
-#endif
-	raw_spin_unlock_irqrestore(&desc->lock, flags);
-}
-
-/**
- *	dynamic_irq_init - initialize a dynamically allocated irq
- *	@irq:	irq number to initialize
- */
-void dynamic_irq_init(unsigned int irq)
-{
-	dynamic_irq_init_x(irq, false);
-}
-
-/**
- *	dynamic_irq_init_keep_chip_data - initialize a dynamically allocated irq
- *	@irq:	irq number to initialize
- *
- *	does not set irq_to_desc(irq)->irq_data.chip_data to NULL
- */
-void dynamic_irq_init_keep_chip_data(unsigned int irq)
-{
-	dynamic_irq_init_x(irq, true);
-}
-
-static void dynamic_irq_cleanup_x(unsigned int irq, bool keep_chip_data)
-{
-	struct irq_desc *desc = irq_to_desc(irq);
-	unsigned long flags;
-
-	if (!desc) {
-		WARN(1, KERN_ERR "Trying to cleanup invalid IRQ%d\n", irq);
-		return;
-	}
-
-	raw_spin_lock_irqsave(&desc->lock, flags);
-	if (desc->action) {
-		raw_spin_unlock_irqrestore(&desc->lock, flags);
-		WARN(1, KERN_ERR "Destroying IRQ%d without calling free_irq\n",
-			irq);
-		return;
-	}
-	desc->irq_data.msi_desc = NULL;
-	desc->irq_data.handler_data = NULL;
-	if (!keep_chip_data)
-		desc->irq_data.chip_data = NULL;
-	desc->handle_irq = handle_bad_irq;
-	desc->irq_data.chip = &no_irq_chip;
-	desc->name = NULL;
-	clear_kstat_irqs(desc);
-	raw_spin_unlock_irqrestore(&desc->lock, flags);
-}
-
-/**
- *	dynamic_irq_cleanup - cleanup a dynamically allocated irq
- *	@irq:	irq number to initialize
- */
-void dynamic_irq_cleanup(unsigned int irq)
-{
-	dynamic_irq_cleanup_x(irq, false);
-}
-
-/**
- *	dynamic_irq_cleanup_keep_chip_data - cleanup a dynamically allocated irq
- *	@irq:	irq number to initialize
- *
- *	does not set irq_to_desc(irq)->irq_data.chip_data to NULL
- */
-void dynamic_irq_cleanup_keep_chip_data(unsigned int irq)
-{
-	dynamic_irq_cleanup_x(irq, true);
-}
-
-
 /**
  *	set_irq_chip - set the irq chip for an irq
  *	@irq:	irq number
@@ -255,6 +153,14 @@ int set_irq_chip_data(unsigned int irq, void *data)
 	return 0;
 }
 EXPORT_SYMBOL(set_irq_chip_data);
+
+struct irq_data *irq_get_irq_data(unsigned int irq)
+{
+	struct irq_desc *desc = irq_to_desc(irq);
+
+	return desc ? &desc->irq_data : NULL;
+}
+EXPORT_SYMBOL_GPL(irq_get_irq_data);
 
 /**
  *	set_irq_nested_thread - Set/Reset the IRQ_NESTED_THREAD flag of an irq
@@ -851,32 +757,20 @@ set_irq_chip_and_handler_name(unsigned int irq, struct irq_chip *chip,
 	__set_irq_handler(irq, handle, 0, name);
 }
 
-void set_irq_noprobe(unsigned int irq)
+void irq_modify_status(unsigned int irq, unsigned long clr, unsigned long set)
 {
 	struct irq_desc *desc = irq_to_desc(irq);
 	unsigned long flags;
 
-	if (!desc) {
-		printk(KERN_ERR "Trying to mark IRQ%d non-probeable\n", irq);
+	if (!desc)
 		return;
-	}
+
+	/* Sanitize flags */
+	set &= IRQF_MODIFY_MASK;
+	clr &= IRQF_MODIFY_MASK;
 
 	raw_spin_lock_irqsave(&desc->lock, flags);
-	desc->status |= IRQ_NOPROBE;
-	raw_spin_unlock_irqrestore(&desc->lock, flags);
-}
-
-void set_irq_probe(unsigned int irq)
-{
-	struct irq_desc *desc = irq_to_desc(irq);
-	unsigned long flags;
-
-	if (!desc) {
-		printk(KERN_ERR "Trying to mark IRQ%d probeable\n", irq);
-		return;
-	}
-
-	raw_spin_lock_irqsave(&desc->lock, flags);
-	desc->status &= ~IRQ_NOPROBE;
+	desc->status &= ~clr;
+	desc->status |= set;
 	raw_spin_unlock_irqrestore(&desc->lock, flags);
 }

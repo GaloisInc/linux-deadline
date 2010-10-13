@@ -1,6 +1,7 @@
 /*
  * IRQ subsystem internal functions and variables:
  */
+#include <linux/irqdesc.h>
 
 extern int noirqdebug;
 
@@ -17,21 +18,19 @@ extern int __irq_set_trigger(struct irq_desc *desc, unsigned int irq,
 extern void __disable_irq(struct irq_desc *desc, unsigned int irq, bool susp);
 extern void __enable_irq(struct irq_desc *desc, unsigned int irq, bool resume);
 
-extern struct lock_class_key irq_desc_lock_class;
 extern void init_kstat_irqs(struct irq_desc *desc, int node, int nr);
-extern void clear_kstat_irqs(struct irq_desc *desc);
-extern raw_spinlock_t sparse_irq_lock;
 
-#ifdef CONFIG_SPARSE_IRQ
-void replace_irq_desc(unsigned int irq, struct irq_desc *desc);
-#endif
+/* Resending of interrupts :*/
+void check_irq_resend(struct irq_desc *desc, unsigned int irq);
 
 #ifdef CONFIG_PROC_FS
 extern void register_irq_proc(unsigned int irq, struct irq_desc *desc);
+extern void unregister_irq_proc(unsigned int irq, struct irq_desc *desc);
 extern void register_handler_proc(unsigned int irq, struct irqaction *action);
 extern void unregister_handler_proc(unsigned int irq, struct irqaction *action);
 #else
 static inline void register_irq_proc(unsigned int irq, struct irq_desc *desc) { }
+static inline void unregister_irq_proc(unsigned int irq, struct irq_desc *desc) { }
 static inline void register_handler_proc(unsigned int irq,
 					 struct irqaction *action) { }
 static inline void unregister_handler_proc(unsigned int irq,
