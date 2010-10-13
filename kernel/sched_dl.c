@@ -19,6 +19,21 @@ static inline int dl_time_before(u64 a, u64 b)
 	return (s64)(a - b) < 0;
 }
 
+/*
+ * Tells if entity @a should preempt entity @b.
+ */
+static inline
+int dl_entity_preempt(struct sched_dl_entity *a, struct sched_dl_entity *b)
+{
+	/*
+	 * A system task marked with SF_HEAD flag will always
+	 * preempt a non 'special' one.
+	 */
+	return a->flags & SF_HEAD ||
+	       (!(b->flags & SF_HEAD) &&
+		dl_time_before(a->deadline, b->deadline));
+}
+
 static inline struct task_struct *dl_task_of(struct sched_dl_entity *dl_se)
 {
 	return container_of(dl_se, struct task_struct, dl);
@@ -291,7 +306,13 @@ int dl_runtime_exceeded(struct rq *rq, struct sched_dl_entity *dl_se)
 	int dmiss = dl_time_before(dl_se->deadline, rq->clock);
 	int rorun = dl_se->runtime <= 0;
 
-	if (!rorun && !dmiss)
+	/*
+	 * No need for checking if it's time to enforce the
+	 * bandwidth for the tasks that are:
+	 *  - maximum priority (SF_HEAD),
+	 *  - not overrunning nor missing a deadline.
+	 */
+	if (dl_se->flags & SF_HEAD || (!rorun && !dmiss))
 		return 0;
 
 	/*
@@ -359,7 +380,7 @@ static void __enqueue_dl_entity(struct sched_dl_entity *dl_se)
 	while (*link) {
 		parent = *link;
 		entry = rb_entry(parent, struct sched_dl_entity, rb_node);
-		if (dl_time_before(dl_se->deadline, entry->deadline))
+		if (dl_entity_preempt(dl_se, entry))
 			link = &parent->rb_left;
 		else {
 			link = &parent->rb_right;
@@ -471,7 +492,7 @@ static void check_preempt_curr_dl(struct rq *rq, struct task_struct *p,
 				  int flags)
 {
 	if (!dl_task(rq->curr) || (dl_task(p) &&
-	    dl_time_before(p->dl.deadline, rq->curr->dl.deadline)))
+	    dl_entity_preempt(&p->dl, &rq->curr->dl)))
 		resched_task(rq->curr);
 }
 

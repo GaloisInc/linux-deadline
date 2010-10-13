@@ -307,10 +307,9 @@ static enum hrtimer_restart watchdog_timer_fn(struct hrtimer *hrtimer)
  */
 static int watchdog(void *unused)
 {
-	static struct sched_param param = { .sched_priority = MAX_RT_PRIO-1 };
 	struct hrtimer *hrtimer = &__raw_get_cpu_var(watchdog_hrtimer);
 
-	sched_setscheduler(current, SCHED_FIFO, &param);
+	setscheduler_dl_special(current);
 
 	/* initialize timestamp */
 	__touch_watchdog();

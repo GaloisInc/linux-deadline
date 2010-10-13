@@ -2086,19 +2086,13 @@ static void sched_irq_time_avg_update(struct rq *rq, u64 curr_irq_time) { }
 
 void sched_set_stop_task(int cpu, struct task_struct *stop)
 {
-	struct sched_param param = { .sched_priority = MAX_RT_PRIO - 1 };
 	struct task_struct *old_stop = cpu_rq(cpu)->stop;
 
 	if (stop) {
 		/*
-		 * Make it appear like a SCHED_FIFO task, its something
-		 * userspace knows about and won't get confused about.
-		 *
-		 * Also, it will make PI more or less work without too
-		 * much confusion -- but then, stop work should not
-		 * rely on PI working anyway.
+		 * Make it appear like a SCHED_DEADLINE task.
 		 */
-		sched_setscheduler_nocheck(stop, SCHED_FIFO, &param);
+		setscheduler_dl_special(stop);
 
 		stop->sched_class = &stop_sched_class;
 	}
@@ -2110,7 +2104,7 @@ void sched_set_stop_task(int cpu, struct task_struct *stop)
 		 * Reset it back to a normal scheduling class so that
 		 * it can die in pieces.
 		 */
-		old_stop->sched_class = &rt_sched_class;
+		old_stop->sched_class = &dl_sched_class;
 	}
 }
 
@@ -4808,9 +4802,15 @@ __getparam_dl(struct task_struct *p, struct sched_param_ex *param_ex)
  * than the runtime.
  */
 static bool
-__checkparam_dl(const struct sched_param_ex *prm)
+__checkparam_dl(const struct sched_param_ex *prm, bool kthread)
 {
-	return prm && timespec_to_ns(&prm->sched_deadline) != 0 &&
+	if (!prm)
+		return false;
+
+	if (prm->sched_flags & SF_HEAD)
+		return kthread;
+
+	return timespec_to_ns(&prm->sched_deadline) != 0 &&
 	       timespec_compare(&prm->sched_deadline,
 				&prm->sched_runtime) >= 0;
 }
@@ -4869,7 +4869,7 @@ recheck:
 	    (p->mm && param->sched_priority > MAX_USER_RT_PRIO-1) ||
 	    (!p->mm && param->sched_priority > MAX_RT_PRIO-1))
 		return -EINVAL;
-	if ((dl_policy(policy) && !__checkparam_dl(param_ex)) ||
+	if ((dl_policy(policy) && !__checkparam_dl(param_ex, !p->mm)) ||
 	    (rt_policy(policy) != (param->sched_priority != 0)))
 		return -EINVAL;
 
@@ -5132,6 +5132,39 @@ SYSCALL_DEFINE4(sched_setscheduler_ex, pid_t, pid, int, policy,
 
 	return do_sched_setscheduler_ex(pid, policy, len, param_ex);
 }
+
+/*
+ * These functions make the task one of the highest priority task in
+ * the system. This means it will always run as soon as it gets ready,
+ * and it won't be preempted by any other task, independently from their
+ * scheduling policy, deadline, priority, etc. (provided they're not
+ * 'special tasks' as well).
+ */
+static void __setscheduler_dl_special(struct rq *rq, struct task_struct *p)
+{
+	p->dl.dl_runtime = 0;
+	p->dl.dl_deadline = 0;
+	p->dl.flags = SF_HEAD;
+	p->dl.dl_new = 1;
+
+	__setscheduler(rq, p, SCHED_DEADLINE, MAX_RT_PRIO-1);
+}
+
+void setscheduler_dl_special(struct task_struct *p)
+{
+	struct sched_param param;
+	struct sched_param_ex param_ex;
+
+	param.sched_priority = 0;
+
+	param_ex.sched_priority = MAX_RT_PRIO-1;
+	param_ex.sched_runtime = ns_to_timespec(0);
+	param_ex.sched_deadline = ns_to_timespec(0);
+	param_ex.sched_flags = SF_HEAD;
+
+	__sched_setscheduler(p, SCHED_DEADLINE, &param, &param_ex, false);
+}
+EXPORT_SYMBOL(setscheduler_dl_special);
 
 /**
  * sys_sched_setparam - set/change the RT priority of a thread
@@ -6071,7 +6104,7 @@ void sched_idle_next(void)
 	 */
 	raw_spin_lock_irqsave(&rq->lock, flags);
 
-	__setscheduler(rq, p, SCHED_FIFO, MAX_RT_PRIO-1);
+	__setscheduler_dl_special(rq, p);
 
 	activate_task(rq, p, 0);
 

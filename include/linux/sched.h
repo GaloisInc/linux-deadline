@@ -154,6 +154,18 @@ struct sched_param_ex {
 	struct timespec curr_deadline;
 };
 
+/*
+ * Scheduler flags.
+ *
+ *  @SF_HEAD    tells us that the task has to be considered one of the
+ *              maximum priority tasks in the system. This means it
+ *              always enqueued with maximum priority in the runqueue
+ *              of the highest priority scheduling class. In case it
+ *              it sched_deadline, the task also ignore runtime and
+ *              bandwidth limitations.
+ */
+#define SF_HEAD		1
+
 struct exec_domain;
 struct futex_pi_state;
 struct robust_list_head;
@@ -2072,6 +2084,7 @@ extern int sched_setscheduler(struct task_struct *, int,
 			      const struct sched_param *);
 extern int sched_setscheduler_nocheck(struct task_struct *, int,
 				      const struct sched_param *);
+extern void setscheduler_dl_special(struct task_struct *);
 extern int sched_setscheduler_ex(struct task_struct *, int,
 				 const struct sched_param *,
 				 const struct sched_param_ex *);

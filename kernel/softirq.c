@@ -853,13 +853,9 @@ static int __cpuinit cpu_callback(struct notifier_block *nfb,
 			     cpumask_any(cpu_online_mask));
 	case CPU_DEAD:
 	case CPU_DEAD_FROZEN: {
-		static struct sched_param param = {
-			.sched_priority = MAX_RT_PRIO-1
-		};
-
 		p = per_cpu(ksoftirqd, hotcpu);
 		per_cpu(ksoftirqd, hotcpu) = NULL;
-		sched_setscheduler_nocheck(p, SCHED_FIFO, &param);
+		setscheduler_dl_special(p);
 		kthread_stop(p);
 		takeover_tasklets(hotcpu);
 		break;
