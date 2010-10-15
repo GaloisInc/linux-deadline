@@ -4799,6 +4799,8 @@ __setparam_dl(struct task_struct *p, const struct sched_param_ex *param_ex)
 	dl_se->flags = param_ex->sched_flags;
 	dl_se->dl_throttled = 0;
 	dl_se->dl_new = 1;
+
+	dl_se->stats.tot_rtime = 0;
 }
 
 static void
@@ -4812,6 +4814,7 @@ __getparam_dl(struct task_struct *p, struct sched_param_ex *param_ex)
 	param_ex->sched_period = ns_to_timespec(dl_se->dl_period);
 	param_ex->sched_flags = dl_se->flags;
 	param_ex->curr_runtime = ns_to_timespec(dl_se->runtime);
+	param_ex->used_runtime = ns_to_timespec(dl_se->stats.tot_rtime);
 	param_ex->curr_deadline = ns_to_timespec(dl_se->deadline);
 }
 

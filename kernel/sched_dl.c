@@ -535,6 +535,7 @@ static void update_curr_dl(struct rq *rq)
 
 	sched_dl_avg_update(rq, delta_exec);
 
+	dl_se->stats.tot_rtime += delta_exec;
 	dl_se->runtime -= delta_exec;
 	if (dl_runtime_exceeded(rq, dl_se)) {
 		__dequeue_task_dl(rq, curr, 0);

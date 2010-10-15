@@ -472,6 +472,7 @@ void proc_sched_show_task(struct task_struct *p, struct seq_file *m)
 		PN(dl.stats.dmiss_max);
 		PN(dl.stats.last_rorun);
 		PN(dl.stats.rorun_max);
+		PN(dl.stats.tot_rtime);
 	}
 
 	{

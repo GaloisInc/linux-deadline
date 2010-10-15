@@ -1242,14 +1242,15 @@ struct sched_rt_entity {
 #endif
 };
 
-#ifdef CONFIG_SCHEDSTATS
 struct sched_stats_dl {
+#ifdef CONFIG_SCHEDSTATS
 	u64			last_dmiss;
 	u64			last_rorun;
 	u64			dmiss_max;
 	u64			rorun_max;
-};
 #endif
+	u64			tot_rtime;
+};
 
 struct sched_dl_entity {
 	struct rb_node	rb_node;
@@ -1292,9 +1293,7 @@ struct sched_dl_entity {
 	 */
 	struct hrtimer dl_timer;
 
-#ifdef CONFIG_SCHEDSTATS
 	struct sched_stats_dl stats;
-#endif
 };
 
 struct rcu_node;
