@@ -140,12 +140,15 @@ static inline void fpu_fxsave(struct fpu *fpu)
 	/* Using "rex64; fxsave %0" is broken because, if the memory operand
 	   uses any extended registers for addressing, a second REX prefix
 	   will be generated (to the assembler, rex64 followed by semicolon
-	   is a separate instruction), and hence the 64-bitness is lost.
-	   Using "fxsaveq %0" would be the ideal choice, but is only supported
-	   starting with gas 2.16.
-	asm volatile("fxsaveq %0"
-		     : "=m" (fpu->state->fxsave));
-	   Using, as a workaround, the properly prefixed form below isn't
+	   is a separate instruction), and hence the 64-bitness is lost. */
+
+#ifdef CONFIG_AS_FXSAVEQ
+	/* Using "fxsaveq %0" would be the ideal choice, but is only supported
+	   starting with gas 2.16. */
+	__asm__ __volatile__("fxsaveq %0"
+			     : "=m" (fpu->state->fxsave));
+#else
+	/* Using, as a workaround, the properly prefixed form below isn't
 	   accepted by any binutils version so far released, complaining that
 	   the same type of prefix is used twice if an extended register is
 	   needed for addressing (fix submitted to mainline 2005-11-21).
@@ -156,6 +159,7 @@ static inline void fpu_fxsave(struct fpu *fpu)
 	asm volatile("rex64/fxsave (%[fx])"
 		     : "=m" (fpu->state->fxsave)
 		     : [fx] "R" (&fpu->state->fxsave));
+#endif
 }
 
 #else  /* CONFIG_X86_32 */

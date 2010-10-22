@@ -647,15 +647,6 @@ static void __init trim_bios_range(void)
 	sanitize_e820_map(e820.map, ARRAY_SIZE(e820.map), &e820.nr_map);
 }
 
-static u64 __init get_max_mapped(void)
-{
-	u64 end = max_pfn_mapped;
-
-	end <<= PAGE_SHIFT;
-
-	return end;
-}
-
 static int __init parse_reservelow(char *p)
 {
 	unsigned long long size;
@@ -677,6 +668,15 @@ static int __init parse_reservelow(char *p)
 }
 
 early_param("reservelow", parse_reservelow);
+
+static u64 __init get_max_mapped(void)
+{
+	u64 end = max_pfn_mapped;
+
+	end <<= PAGE_SHIFT;
+
+	return end;
+}
 
 /*
  * Determine if we were loaded by an EFI loader.  If so, then we have also been
