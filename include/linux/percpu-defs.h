@@ -139,6 +139,15 @@
 	__aligned(PAGE_SIZE)
 
 /*
+ * Declaration/definition used for per-CPU variables that must be read mostly.
+ */
+#define DECLARE_PER_CPU_READ_MOSTLY(type, name)			\
+	DECLARE_PER_CPU_SECTION(type, name, "..readmostly")
+
+#define DEFINE_PER_CPU_READ_MOSTLY(type, name)				\
+	DEFINE_PER_CPU_SECTION(type, name, "..readmostly")
+
+/*
  * Declaration/definition used for large per-CPU variables that must be
  * aligned to something larger than the pagesize.
  */
@@ -149,15 +158,6 @@
 #define DEFINE_PER_CPU_MULTIPAGE_ALIGNED(type, name, size)		\
 	DEFINE_PER_CPU_SECTION(type, name, "..page_aligned")		\
 	__aligned(size)
-
-/*
- * Declaration/definition used for per-CPU variables that must be read mostly.
- */
-#define DECLARE_PER_CPU_READ_MOSTLY(type, name)			\
-	DECLARE_PER_CPU_SECTION(type, name, "..readmostly")
-
-#define DEFINE_PER_CPU_READ_MOSTLY(type, name)				\
-	DEFINE_PER_CPU_SECTION(type, name, "..readmostly")
 
 /*
  * Intermodule exports for per-CPU variables.  sparse forgets about
