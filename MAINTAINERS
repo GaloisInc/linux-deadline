@@ -157,9 +157,11 @@ S:	Maintained
 F:	drivers/net/r8169.c
 
 8250/16?50 (AND CLONE UARTS) SERIAL DRIVER
+M:	Greg Kroah-Hartman <gregkh@suse.de>
 L:	linux-serial@vger.kernel.org
 W:	http://serial.sourceforge.net
-S:	Orphan
+S:	Maintained
+T:	quilt kernel.org/pub/linux/kernel/people/gregkh/gregkh-2.6/
 F:	drivers/serial/8250*
 F:	include/linux/serial_8250.h
 
@@ -2064,14 +2066,16 @@ F:	drivers/block/drbd/
 F:	lib/lru_cache.c
 F:	Documentation/blockdev/drbd/
 
-DRIVER CORE, KOBJECTS, AND SYSFS
+DRIVER CORE, KOBJECTS, DEBUGFS AND SYSFS
 M:	Greg Kroah-Hartman <gregkh@suse.de>
 T:	quilt kernel.org/pub/linux/kernel/people/gregkh/gregkh-2.6/
 S:	Supported
 F:	Documentation/kobject.txt
 F:	drivers/base/
 F:	fs/sysfs/
+F:	fs/debugfs/
 F:	include/linux/kobj*
+F:	include/linux/debugfs.h
 F:	lib/kobj*
 
 DRM DRIVERS
@@ -3350,6 +3354,12 @@ S:	Maintained
 F:	fs/jbd*/
 F:	include/linux/ext*jbd*.h
 F:	include/linux/jbd*.h
+
+JSM Neo PCI based serial card
+M:	Breno Leitao <leitao@linux.vnet.ibm.com>
+L:	linux-serial@vger.kernel.org
+S:	Maintained
+F:	drivers/serial/jsm/
 
 K8TEMP HARDWARE MONITORING DRIVER
 M:	Rudolf Marek <r.marek@assembler.cz>
@@ -5962,6 +5972,14 @@ L:	linux-usb@vger.kernel.org
 S:	Maintained
 F:	Documentation/usb/acm.txt
 F:	drivers/usb/class/cdc-acm.*
+
+USB ATTACHED SCSI
+M:	Matthew Wilcox <willy@linux.intel.com>
+M:	Sarah Sharp <sarah.a.sharp@linux.intel.com>
+L:	linux-usb@vger.kernel.org
+L:	linux-scsi@vger.kernel.org
+S:	Supported
+F:	drivers/usb/storage/uas.c
 
 USB BLOCK DRIVER (UB ub)
 M:	Pete Zaitcev <zaitcev@redhat.com>
