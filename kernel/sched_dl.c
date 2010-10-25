@@ -1084,7 +1084,17 @@ static void task_fork_dl(struct task_struct *p)
 
 static void task_dead_dl(struct task_struct *p)
 {
+	struct dl_bw *dl_b = &task_rq(p)->rd->dl_bw;
+
 	/*
+	 * Since we are TASK_DEAD we won't slip out of the domain!
+	 */
+	raw_spin_lock_irq(&dl_b->lock);
+	dl_b->total_bw -= p->dl.dl_bw;
+	raw_spin_unlock_irq(&dl_b->lock);
+
+	/*
+	 * We are no longer holding any lock here, so it is safe to
 	 * We are not holding any lock here, so it is safe to
 	 * wait for the bandwidth timer to be removed.
 	 */
