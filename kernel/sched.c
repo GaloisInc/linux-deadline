@@ -2235,7 +2235,7 @@ void set_task_cpu(struct task_struct *p, unsigned int new_cpu)
 #endif
 
 	trace_sched_migrate_task(p, new_cpu);
-	if (unlikely(dl_task(p)))
+	if (unlikely(__dl_task(p)))
 		trace_sched_migrate_task_dl(p, task_rq(p)->clock,
 					    new_cpu, cpu_rq(new_cpu)->clock);
 
@@ -2983,6 +2983,16 @@ static void finish_task_switch(struct rq *rq, struct task_struct *prev)
 			prev->sched_class->task_dead(prev);
 
 		/*
+		 * If we are a -deadline task, dieing while
+		 * hanging out in a different scheduling class
+		 * we need to manually call our own cleanup function,
+		 * at least to stop the bandwidth timer.
+		 */
+		if (unlikely(task_has_dl_policy(prev) &&
+		    prev->sched_class != &dl_sched_class))
+			dl_sched_class.task_dead(prev);
+
+		/*
 		 * Remove function-return probe instances associated with this
 		 * task and put them back on the free list.
 		 */
@@ -3064,7 +3074,7 @@ context_switch(struct rq *rq, struct task_struct *prev,
 
 	prepare_task_switch(rq, prev, next);
 	trace_sched_switch(prev, next);
-	if (unlikely(dl_task(prev) || dl_task(next)))
+	if (unlikely(__dl_task(prev) || __dl_task(next)))
 		trace_sched_switch_dl(rq->clock, prev, next);
 	mm = next->mm;
 	oldmm = prev->active_mm;
@@ -4554,34 +4564,13 @@ long __sched sleep_on_timeout(wait_queue_head_t *q, long timeout)
 }
 EXPORT_SYMBOL(sleep_on_timeout);
 
-#ifdef CONFIG_RT_MUTEXES
-
-/*
- * rt_mutex_setprio - set the current priority of a task
- * @p: task
- * @prio: prio value (kernel-internal form)
- *
- * This function changes the 'effective' priority of a task. It does
- * not touch ->normal_prio like __setscheduler().
- *
- * Used by the rt_mutex code to implement priority inheritance logic.
- */
-void rt_mutex_setprio(struct task_struct *p, int prio)
+static void __setprio(struct rq *rq, struct task_struct *p, int prio)
 {
-	unsigned long flags;
-	int oldprio, on_rq, running;
-	struct rq *rq;
-	const struct sched_class *prev_class;
+	int oldprio = p->prio;
+	const struct sched_class *prev_class = p->sched_class;
+	int running = task_current(rq, p);
+	int on_rq = p->se.on_rq;
 
-	BUG_ON(prio < 0 || prio > MAX_PRIO);
-
-	rq = task_rq_lock(p, &flags);
-
-	trace_sched_pi_setprio(p, prio);
-	oldprio = p->prio;
-	prev_class = p->sched_class;
-	on_rq = p->se.on_rq;
-	running = task_current(rq, p);
 	if (on_rq)
 		dequeue_task(rq, p, 0);
 	if (running)
@@ -4603,6 +4592,30 @@ void rt_mutex_setprio(struct task_struct *p, int prio)
 
 		check_class_changed(rq, p, prev_class, oldprio, running);
 	}
+}
+
+#ifdef CONFIG_RT_MUTEXES
+
+/*
+ * rt_mutex_setprio - set the current priority of a task
+ * @p: task
+ * @prio: prio value (kernel-internal form)
+ *
+ * This function changes the 'effective' priority of a task. It does
+ * not touch ->normal_prio like __setscheduler().
+ *
+ * Used by the rt_mutex code to implement priority inheritance logic.
+ */
+void rt_mutex_setprio(struct task_struct *p, int prio)
+{
+	unsigned long flags;
+	struct rq *rq;
+
+	BUG_ON(prio < 0 || prio > MAX_PRIO);
+
+	rq = task_rq_lock(p, &flags);
+	trace_sched_pi_setprio(p, prio);
+	__setprio(rq, p, prio);
 	task_rq_unlock(rq, &flags);
 }
 
@@ -4909,17 +4922,30 @@ recheck:
 	 */
 	if (user && !capable(CAP_SYS_NICE)) {
 		if (dl_policy(policy)) {
-			u64 rlim_dline, rlim_rtime;
+			u64 rlim_dline, rlim_rtime, rlim_rtprio;
 			u64 dline, rtime;
 
 			if (!lock_task_sighand(p, &flags))
 				return -ESRCH;
 			rlim_dline = p->signal->rlim[RLIMIT_DLDLINE].rlim_cur;
 			rlim_rtime = p->signal->rlim[RLIMIT_DLRTIME].rlim_cur;
+			rlim_rtprio = p->signal->rlim[RLIMIT_RTPRIO].rlim_cur;
 			unlock_task_sighand(p, &flags);
 
 			/* can't set/change -deadline policy */
 			if (policy != p->policy && !rlim_rtime)
+				return -EPERM;
+
+			/* can't set/change reclaiming policy to -deadline */
+			if ((param_ex->sched_flags & SF_BWRECL_DL) !=
+			    (p->dl.flags & SF_BWRECL_DL))
+				return -EPERM;
+
+			/* can't set/increase -rt reclaiming priority */
+			if (param_ex->sched_flags & SF_BWRECL_RT &&
+			    (param_ex->sched_priority <= 0 ||
+			     (param_ex->sched_priority > p->rt_priority &&
+			      param_ex->sched_priority > rlim_rtprio)))
 				return -EPERM;
 
 			/* can't decrease the deadline */
@@ -8596,7 +8622,7 @@ void normalize_rt_tasks(void)
 		p->se.statistics.block_start	= 0;
 #endif
 
-		if (!dl_task(p) && !rt_task(p)) {
+		if (!__dl_task(p) && !rt_task(p)) {
 			/*
 			 * Renice negative nice level userspace
 			 * tasks back to 0:

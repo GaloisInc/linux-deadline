@@ -172,10 +172,26 @@ struct sched_param_ex {
  *                      a runtime overrun occurs;
  *  @SF_SIG_DMISS       tells us the task wants to be notified whenever
  *                      a scheduling deadline is missed.
+ *  @SF_BWRECL_DL       tells us that the task doesn't stop when exhausting
+ *                      its runtime, and it remains a -deadline task, even
+ *                      though its deadline is postponed. This means it
+ *                      won't affect the scheduling of the other -deadline
+ *                      tasks, but if it is a CPU-hog, lower scheduling
+ *                      classes will starve!
+ *  @SF_BWRECL_RT       tells us that the task doesn't stop when exhausting
+ *                      its runtime, and it becomes a -rt task, with the
+ *                      priority specified in the sched_priority field of
+ *                      struct shced_param_ex.
+ *  @SF_BWRECL_OTH      tells us that the task doesn't stop when exhausting
+ *                      its runtime, and it becomes a normal task, with
+ *                      default priority.
  */
 #define SF_HEAD		1
 #define SF_SIG_RORUN	2
 #define SF_SIG_DMISS	4
+#define SF_BWRECL_DL	8
+#define SF_BWRECL_RT	16
+#define SF_BWRECL_NR	32
 
 struct exec_domain;
 struct futex_pi_state;
@@ -1692,6 +1708,15 @@ static inline int dl_prio(int prio)
 static inline int dl_task(struct task_struct *p)
 {
 	return dl_prio(p->prio);
+}
+
+/*
+ * We might have temporarily dropped -deadline policy,
+ * but still be a -deadline task!
+ */
+static inline int __dl_task(struct task_struct *p)
+{
+	return dl_task(p) || p->policy == SCHED_DEADLINE;
 }
 
 static inline int rt_prio(int prio)

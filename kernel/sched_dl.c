@@ -15,6 +15,8 @@
  *                    Fabio Checconi <fabio@gandalf.sssup.it>
  */
 
+static const struct sched_class dl_sched_class;
+
 static inline int dl_time_before(u64 a, u64 b)
 {
 	return (s64)(a - b) < 0;
@@ -382,6 +384,17 @@ static int start_dl_timer(struct sched_dl_entity *dl_se)
 	s64 delta;
 
 	/*
+	 * If the task wants to stay -deadline even if it exhausted
+	 * its runtime we allow that by not starting the timer.
+	 * update_curr_dl() will thus queue it back after replenishment
+	 * and deadline postponing.
+	 * This won't affect the other -deadline tasks, but if we are
+	 * a CPU-hog, lower scheduling classes will starve!
+	 */
+	if (dl_se->flags & SF_BWRECL_DL)
+		return 0;
+
+	/*
 	 * We want the timer to fire at the deadline, but considering
 	 * that it is actually coming from rq->clock and not from
 	 * hrtimer's time base reading.
@@ -414,6 +427,8 @@ static int start_dl_timer(struct sched_dl_entity *dl_se)
 	return hrtimer_active(&dl_se->dl_timer);
 }
 
+static void __setprio(struct rq *rq, struct task_struct *p, int prio);
+
 /*
  * This is the bandwidth enforcement timer callback. If here, we know
  * a task is not on its dl_rq, since the fact that the timer was running
@@ -440,11 +455,17 @@ static enum hrtimer_restart dl_task_timer(struct hrtimer *timer)
 	 * We need to take care of a possible races here. In fact, the
 	 * task might have changed its scheduling policy to something
 	 * different from SCHED_DEADLINE (through sched_setscheduler()).
+	 * However, if we changed scheduling class for reclaiming, it
+	 * is correct to handle this replenishment, since this is what
+	 * will put us back into the -deadline scheduling class.
 	 */
-	if (!dl_task(p))
+	if (!__dl_task(p))
 		goto unlock;
 
 	trace_sched_timer_dl(p, rq->clock, p->se.on_rq, task_current(rq, p));
+
+	if (unlikely(p->sched_class != &dl_sched_class))
+		__setprio(rq, p, MAX_DL_PRIO-1);
 
 	dl_se->dl_throttled = 0;
 	if (p->se.on_rq) {
@@ -530,6 +551,16 @@ int dl_runtime_exceeded(struct rq *rq, struct sched_dl_entity *dl_se)
 	return 1;
 }
 
+static inline void throttle_curr_dl(struct rq *rq, struct task_struct *curr)
+{
+	curr->dl.dl_throttled = 1;
+
+	if (curr->dl.flags & SF_BWRECL_RT)
+		__setprio(rq, curr, MAX_RT_PRIO-1 - curr->rt_priority);
+	else if (curr->dl.flags & SF_BWRECL_NR)
+		__setprio(rq, curr, DEFAULT_PRIO);
+}
+
 /*
  * Update the current task's runtime statistics (provided it is still
  * a -deadline task and has not been removed from the dl_rq).
@@ -565,7 +596,7 @@ static void update_curr_dl(struct rq *rq)
 	if (dl_runtime_exceeded(rq, dl_se)) {
 		__dequeue_task_dl(rq, curr, 0);
 		if (likely(start_dl_timer(dl_se)))
-			dl_se->dl_throttled = 1;
+			throttle_curr_dl(rq, curr);
 		else
 			enqueue_task_dl(rq, curr, ENQUEUE_REPLENISH);
 
@@ -765,8 +796,10 @@ static void __dequeue_task_dl(struct rq *rq, struct task_struct *p, int flags)
 
 static void dequeue_task_dl(struct rq *rq, struct task_struct *p, int flags)
 {
-	update_curr_dl(rq);
-	__dequeue_task_dl(rq, p, flags);
+	if (likely(!p->dl.dl_throttled)) {
+		update_curr_dl(rq);
+		__dequeue_task_dl(rq, p, flags);
+	}
 }
 
 /*
@@ -1000,6 +1033,9 @@ struct task_struct *pick_next_task_dl(struct rq *rq)
 
 static void put_prev_task_dl(struct rq *rq, struct task_struct *p)
 {
+	if (unlikely(p->dl.dl_throttled))
+		return;
+
 	update_curr_dl(rq);
 	p->se.exec_start = 0;
 
