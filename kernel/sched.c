@@ -4611,10 +4611,11 @@ void rt_mutex_setprio(struct task_struct *p, int prio)
 	unsigned long flags;
 	struct rq *rq;
 
-	BUG_ON(prio < 0 || prio > MAX_PRIO);
+	BUG_ON(prio > MAX_PRIO);
 
 	rq = task_rq_lock(p, &flags);
 	trace_sched_pi_setprio(p, prio);
+	p->pi_top_task = rt_mutex_get_top_task(p);
 	__setprio(rq, p, prio);
 	task_rq_unlock(rq, &flags);
 }
