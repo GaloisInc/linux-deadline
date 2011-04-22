@@ -890,6 +890,7 @@ static void dequeue_rt_entity(struct sched_rt_entity *rt_se)
 static void
 enqueue_task_rt(struct rq *rq, struct task_struct *p, int flags)
 {
+	cycles_t x = get_cycles();
 	struct sched_rt_entity *rt_se = &p->rt;
 
 	if (flags & ENQUEUE_WAKEUP)
@@ -899,16 +900,23 @@ enqueue_task_rt(struct rq *rq, struct task_struct *p, int flags)
 
 	if (!task_current(rq, p) && p->rt.nr_cpus_allowed > 1)
 		enqueue_pushable_task(rq, p);
+
+	schedstat_add(&rq->rt, enqueue_cycles, get_cycles() - x);
+	schedstat_inc(&rq->rt, nr_enqueue);
 }
 
 static void dequeue_task_rt(struct rq *rq, struct task_struct *p, int flags)
 {
+	cycles_t x = get_cycles();
 	struct sched_rt_entity *rt_se = &p->rt;
 
 	update_curr_rt(rq);
 	dequeue_rt_entity(rt_se);
 
 	dequeue_pushable_task(rq, p);
+
+	schedstat_add(&rq->rt, dequeue_cycles, get_cycles() - x);
+	schedstat_inc(&rq->rt, nr_dequeue);
 }
 
 /*
@@ -1311,20 +1319,25 @@ static struct task_struct *pick_next_pushable_task(struct rq *rq)
  */
 static int push_rt_task(struct rq *rq)
 {
+	cycles_t x = get_cycles();
 	struct task_struct *next_task;
 	struct rq *lowest_rq;
+	int ret = 0;
 
 	if (!rq->rt.overloaded)
-		return 0;
+		/*return 0;*/
+		goto out;
 
 	next_task = pick_next_pushable_task(rq);
 	if (!next_task)
-		return 0;
+		/*return 0;*/
+		goto out;
 
 retry:
 	if (unlikely(next_task == rq->curr)) {
 		WARN_ON(1);
-		return 0;
+		/*return 0;*/
+		goto out;
 	}
 
 	/*
@@ -1334,7 +1347,8 @@ retry:
 	 */
 	if (unlikely(next_task->prio < rq->curr->prio)) {
 		resched_task(rq->curr);
-		return 0;
+		/*return 0;*/
+		goto out;
 	}
 
 	/* We might release rq lock */
@@ -1361,22 +1375,28 @@ retry:
 			 * are ready.
 			 */
 			dequeue_pushable_task(rq, next_task);
-			goto out;
+			ret = 1;
+			goto put;
 		}
 
-		if (!task)
+		if (!task) {
 			/* No more tasks, just exit */
-			goto out;
+			/*goto out;*/
+			ret = 1;
+			goto put;
+		}
 
 		/*
 		 * Something has shifted, try again.
 		 */
+		schedstat_inc(&rq->rt, nr_retry_push);
 		put_task_struct(next_task);
 		next_task = task;
 		goto retry;
 	}
 
 	deactivate_task(rq, next_task, 0);
+	schedstat_inc(&rq->rt, nr_pushed_away);
 	set_task_cpu(next_task, lowest_rq->cpu);
 	activate_task(lowest_rq, next_task, 0);
 
@@ -1384,10 +1404,13 @@ retry:
 
 	double_unlock_balance(rq, lowest_rq);
 
-out:
+put:
 	put_task_struct(next_task);
-
-	return 1;
+out:
+	schedstat_add(&rq->rt, push_cycles, get_cycles() - x);
+	schedstat_inc(&rq->rt, nr_push);
+ 
+	return ret;
 }
 
 static void push_rt_tasks(struct rq *rq)
@@ -1399,12 +1422,14 @@ static void push_rt_tasks(struct rq *rq)
 
 static int pull_rt_task(struct rq *this_rq)
 {
+	cycles_t x = get_cycles();
 	int this_cpu = this_rq->cpu, ret = 0, cpu;
 	struct task_struct *p;
 	struct rq *src_rq;
 
 	if (likely(!rt_overloaded(this_rq)))
-		return 0;
+		/*return 0;*/
+		goto out;
 
 	for_each_cpu(cpu, this_rq->rd->rto_mask) {
 		if (this_cpu == cpu)
@@ -1460,6 +1485,7 @@ static int pull_rt_task(struct rq *this_rq)
 			ret = 1;
 
 			deactivate_task(src_rq, p, 0);
+			schedstat_inc(&this_rq->rt, nr_pulled_here);
 			set_task_cpu(p, this_cpu);
 			activate_task(this_rq, p, 0);
 			/*
@@ -1472,6 +1498,9 @@ static int pull_rt_task(struct rq *this_rq)
 skip:
 		double_unlock_balance(this_rq, src_rq);
 	}
+out:
+	schedstat_add(&this_rq->rt, pull_cycles, get_cycles() - x);
+	schedstat_inc(&this_rq->rt, nr_pull);
 
 	return ret;
 }

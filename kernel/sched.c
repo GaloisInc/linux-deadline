@@ -472,6 +472,20 @@ struct cfs_rq {
 struct rt_rq {
 	struct rt_prio_array active;
 	unsigned long rt_nr_running;
+
+#ifdef CONFIG_SCHEDSTATS
+	u64 exec_clock;
+
+	unsigned long nr_retry_push;
+	unsigned long nr_pushed_away;
+	unsigned long nr_pulled_here;
+
+	u64 enqueue_cycles, dequeue_cycles;
+	unsigned long nr_enqueue, nr_dequeue;
+	u64 push_cycles, pull_cycles;
+	unsigned long nr_push, nr_pull;
+#endif
+
 #if defined CONFIG_SMP || defined CONFIG_RT_GROUP_SCHED
 	struct {
 		int curr; /* highest queued rt task prio */
@@ -509,7 +523,17 @@ struct dl_rq {
 
 	unsigned long dl_nr_running;
 
+#ifdef CONFIG_SCHEDSTATS
 	u64 exec_clock;
+	unsigned long nr_retry_push;
+	unsigned long nr_pushed_away;
+	unsigned long nr_pulled_here;
+
+	u64 enqueue_cycles, dequeue_cycles;
+	unsigned long nr_enqueue, nr_dequeue;
+	u64 push_cycles, pull_cycles;
+	unsigned long nr_push, nr_pull;
+#endif
 
 #ifdef CONFIG_SMP
 	/*

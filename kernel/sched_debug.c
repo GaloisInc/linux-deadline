@@ -235,9 +235,21 @@ void print_rt_rq(struct seq_file *m, int cpu, struct rt_rq *rt_rq)
 	SEQ_printf(m, "  .%-30s: %Ld.%06ld\n", #x, SPLIT_NS(rt_rq->x))
 
 	P(rt_nr_running);
+	PN(exec_clock);
 	P(rt_throttled);
 	PN(rt_time);
 	PN(rt_runtime);
+	P(nr_pushed_away);
+	P(nr_retry_push);
+	P(nr_pulled_here);
+	P(enqueue_cycles);
+	P(nr_enqueue);
+	P(dequeue_cycles);
+	P(nr_dequeue);
+	P(push_cycles);
+	P(nr_push);
+	P(pull_cycles);
+	P(nr_pull);
 
 #undef PN
 #undef P
@@ -273,6 +285,17 @@ void print_dl_rq(struct seq_file *m, int cpu, struct dl_rq *dl_rq)
 	PN(exec_clock);
 	__PN(min_deadline);
 	__PN(max_deadline);
+	P(nr_pushed_away);
+	P(nr_retry_push);
+	P(nr_pulled_here);
+	P(enqueue_cycles);
+	P(nr_enqueue);
+	P(dequeue_cycles);
+	P(nr_dequeue);
+	P(push_cycles);
+	P(nr_push);
+	P(pull_cycles);
+	P(nr_pull);
 
 #undef PN
 #undef __PN
