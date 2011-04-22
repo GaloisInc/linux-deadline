@@ -636,6 +636,7 @@ static void inc_dl_deadline(struct dl_rq *dl_rq, u64 deadline)
 		 */
 		dl_rq->earliest_dl.next = dl_rq->earliest_dl.curr;
 		dl_rq->earliest_dl.curr = deadline;
+		schedstat_inc(&rq->dl, nr_dummy);
 	} else if (dl_rq->earliest_dl.next == 0 ||
 		   dl_time_before(deadline, dl_rq->earliest_dl.next)) {
 		/*
@@ -659,6 +660,7 @@ static void dec_dl_deadline(struct dl_rq *dl_rq, u64 deadline)
 	if (!dl_rq->dl_nr_running) {
 		dl_rq->earliest_dl.curr = 0;
 		dl_rq->earliest_dl.next = 0;
+		schedstat_inc(&rq->dl, nr_dummy);
 	} else {
 		struct rb_node *leftmost = dl_rq->rb_leftmost;
 		struct sched_dl_entity *entry;
@@ -666,6 +668,7 @@ static void dec_dl_deadline(struct dl_rq *dl_rq, u64 deadline)
 		entry = rb_entry(leftmost, struct sched_dl_entity, rb_node);
 		dl_rq->earliest_dl.curr = entry->deadline;
 		dl_rq->earliest_dl.next = next_deadline(rq);
+		schedstat_inc(&rq->dl, nr_dummy);
 	}
 }
 
@@ -954,16 +957,20 @@ static void check_preempt_equal_dl(struct rq *rq, struct task_struct *p)
 	 * let's hope p can move out.
 	 */
 	if (rq->curr->dl.nr_cpus_allowed == 1 ||
-	    latest_cpu_find(rq->rd->span, rq->curr, NULL) == -1)
+	    latest_cpu_find(rq->rd->span, rq->curr, NULL) == -1) {
+		schedstat_inc(&rq->dl, nr_dummy);
 		return;
+	}
 
 	/*
 	 * p is migratable, so let's not schedule it and
 	 * see if it is pushed or pulled somewhere else.
 	 */
 	if (p->dl.nr_cpus_allowed != 1 &&
-	    latest_cpu_find(rq->rd->span, p, NULL) != -1)
+	    latest_cpu_find(rq->rd->span, p, NULL) != -1) {
+		schedstat_inc(&rq->dl, nr_dummy);
 		return;
+	}
 
 	resched_task(rq->curr);
 }
@@ -1199,11 +1206,13 @@ static int find_later_rq(struct task_struct *task)
 	struct cpumask *later_mask = __get_cpu_var(local_cpu_mask_dl);
 	int this_cpu = smp_processor_id();
 	int best_cpu, cpu = task_cpu(task);
+	struct dl_rq *dl_rq = dl_rq_of_se(&task->dl);
 
 	if (task->dl.nr_cpus_allowed == 1)
 		return -1;
 
 	best_cpu = latest_cpu_find(task_rq(task)->rd->span, task, later_mask);
+	schedstat_inc(dl_rq, nr_dummy);
 	if (best_cpu == -1)
 		return -1;
 

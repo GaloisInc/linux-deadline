@@ -532,7 +532,7 @@ struct dl_rq {
 	u64 enqueue_cycles, dequeue_cycles;
 	unsigned long nr_enqueue, nr_dequeue;
 	u64 push_cycles, pull_cycles;
-	unsigned long nr_push, nr_pull;
+	unsigned long nr_push, nr_pull, nr_dummy;
 #endif
 
 #ifdef CONFIG_SMP
