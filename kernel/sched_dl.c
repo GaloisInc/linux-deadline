@@ -1417,6 +1417,7 @@ retry:
 	schedstat_inc(&rq->dl, nr_pushed_away);
 	set_task_cpu(next_task, later_rq->cpu);
 	activate_task(later_rq, next_task, 0);
+	ret = 1;
 
 	resched_task(later_rq->curr);
 
